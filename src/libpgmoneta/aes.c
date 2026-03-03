@@ -862,8 +862,8 @@ cleanup:
    free(encrypted);
 
    /* Wipe key material from stack */
-   OPENSSL_cleanse(key, sizeof(key));
-   OPENSSL_cleanse(iv, sizeof(iv));
+   pgmoneta_cleanse(key, sizeof(key));
+   pgmoneta_cleanse(iv, sizeof(iv));
 
    return ret;
 }
@@ -899,8 +899,8 @@ pgmoneta_decrypt(char* ciphertext, int ciphertext_length, char* password, char**
 
 cleanup:
    /* Wipe key material from stack */
-   OPENSSL_cleanse(key, sizeof(key));
-   OPENSSL_cleanse(iv, sizeof(iv));
+   pgmoneta_cleanse(key, sizeof(key));
+   pgmoneta_cleanse(iv, sizeof(iv));
 
    return ret;
 }
@@ -935,7 +935,7 @@ derive_key_iv(char* password, unsigned char* salt, unsigned char* key, unsigned 
 
 cleanup:
    /* Wipe sensitive derived material */
-   OPENSSL_cleanse(derived, sizeof(derived));
+   pgmoneta_cleanse(derived, sizeof(derived));
 
    return ret;
 }
@@ -1256,12 +1256,12 @@ cleanup:
    }
 
    /* Wipe key material from stack */
-   OPENSSL_cleanse(key, sizeof(key));
-   OPENSSL_cleanse(iv, sizeof(iv));
+   pgmoneta_cleanse(key, sizeof(key));
+   pgmoneta_cleanse(iv, sizeof(iv));
 
    if (master_key != NULL)
    {
-      OPENSSL_cleanse(master_key, strlen(master_key));
+      pgmoneta_cleanse(master_key, strlen(master_key));
       free(master_key);
    }
 
@@ -1452,12 +1452,12 @@ cleanup:
    }
 
    /* Wipe key material from stack */
-   OPENSSL_cleanse(key, sizeof(key));
-   OPENSSL_cleanse(iv, sizeof(iv));
+   pgmoneta_cleanse(key, sizeof(key));
+   pgmoneta_cleanse(iv, sizeof(iv));
 
    if (master_key != NULL)
    {
-      OPENSSL_cleanse(master_key, strlen(master_key));
+      pgmoneta_cleanse(master_key, strlen(master_key));
       free(master_key);
    }
 
@@ -1520,7 +1520,7 @@ create_aes_encryptor(int mode, struct encryptor** encryptor)
 
    if (master_key != NULL)
    {
-      OPENSSL_cleanse(master_key, strlen(master_key));
+      pgmoneta_cleanse(master_key, strlen(master_key));
       free(master_key);
    }
 
@@ -1531,7 +1531,7 @@ create_aes_encryptor(int mode, struct encryptor** encryptor)
 error:
    if (master_key != NULL)
    {
-      OPENSSL_cleanse(master_key, strlen(master_key));
+      pgmoneta_cleanse(master_key, strlen(master_key));
       free(master_key);
    }
 

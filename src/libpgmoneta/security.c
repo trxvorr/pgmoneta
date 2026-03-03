@@ -3422,3 +3422,12 @@ pgmoneta_hasher_destroy(struct hasher* hasher)
    free(hasher->hash);
    free(hasher);
 }
+
+void
+pgmoneta_cleanse(void* ptr, size_t len)
+{
+   if (ptr != NULL && len > 0)
+   {
+      OPENSSL_cleanse(ptr, len);
+   }
+}

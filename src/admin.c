@@ -1535,7 +1535,7 @@ generate_password(int pwd_length)
    }
    pwd[pwd_length] = '\0';
 
-   memset(random_bytes, 0, pwd_length);
+   pgmoneta_cleanse(random_bytes, pwd_length);
    free(random_bytes);
 
    return pwd;

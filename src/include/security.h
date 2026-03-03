@@ -259,6 +259,14 @@ pgmoneta_hasher_destroy(struct hasher* hasher);
 int
 pgmoneta_hasher_update(struct hasher* hasher, void* buffer, size_t size, bool last_chunk);
 
+/**
+ * Cleanse a memory buffer, securely zeroing it out
+ * @param ptr The pointer to the buffer
+ * @param len The length of the buffer
+ */
+void
+pgmoneta_cleanse(void* ptr, size_t len);
+
 #ifdef __cplusplus
 }
 #endif
