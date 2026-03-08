@@ -32,11 +32,14 @@
 #include <logging.h>
 #include <management.h>
 #include <utils.h>
+#include <fcntl.h>
+#include <fcntl.h>
 
 /* system */
 #include <bzlib.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -756,8 +759,12 @@ bzip2_compress(char* from, int level, char* to)
    tmp_to = pgmoneta_append(tmp_to, to);
    tmp_to = pgmoneta_append(tmp_to, ".tmp");
 
-   to_ptr = fopen(tmp_to, "wb");
-   if (!to_ptr)
+   if (pgmoneta_exists(tmp_to))
+   {
+      pgmoneta_delete_file(tmp_to, NULL);
+   }
+
+   if (pgmoneta_fopen_secure(tmp_to, "wb", &to_ptr))
    {
       goto error;
    }
@@ -850,8 +857,12 @@ bzip2_decompress(char* from, char* to)
    tmp_to = pgmoneta_append(tmp_to, to);
    tmp_to = pgmoneta_append(tmp_to, ".tmp");
 
-   to_ptr = fopen(tmp_to, "wb");
-   if (!to_ptr)
+   if (pgmoneta_exists(tmp_to))
+   {
+      pgmoneta_delete_file(tmp_to, NULL);
+   }
+
+   if (pgmoneta_fopen_secure(tmp_to, "wb", &to_ptr))
    {
       goto error;
    }
@@ -941,8 +952,12 @@ bzip2_decompress_file(char* from, char* to)
       goto error;
    }
 
-   to_ptr = fopen(to, "wb");
-   if (!to_ptr)
+   if (pgmoneta_exists(to))
+   {
+      pgmoneta_delete_file(to, NULL);
+   }
+
+   if (pgmoneta_fopen_secure(to, "wb", &to_ptr))
    {
       goto error;
    }

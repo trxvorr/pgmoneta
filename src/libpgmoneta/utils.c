@@ -43,6 +43,7 @@
 #include <errno.h>
 #include <ev.h>
 #include <fcntl.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <libgen.h>
 #include <pwd.h>
@@ -2492,8 +2493,8 @@ do_copy_file(struct worker_common* wc)
    char* to = NULL;
    bool use_direct_io = false;
    bool aligned_buffer = false;
-   int flags_from = O_RDONLY;
-   int flags_to = O_WRONLY | O_CREAT | O_TRUNC;
+   int flags_from = O_RDONLY | O_NOFOLLOW;
+   int flags_to = O_WRONLY | O_CREAT | O_TRUNC | O_EXCL | O_NOFOLLOW;
    size_t alignment = 4096;
 
    /* if the file is partial try for complete file */
@@ -2562,14 +2563,17 @@ do_copy_file(struct worker_common* wc)
 #endif
    }
 
-   if (use_direct_io)
+   if (buffer == NULL)
    {
-      buffer = pgmoneta_allocate_aligned(buffer_size, alignment);
-      aligned_buffer = true;
-   }
-   else
-   {
-      buffer = malloc(buffer_size);
+      if (use_direct_io)
+      {
+         buffer = pgmoneta_allocate_aligned(buffer_size, alignment);
+         aligned_buffer = true;
+      }
+      else
+      {
+         buffer = malloc(buffer_size);
+      }
    }
 
    if (buffer == NULL)
@@ -2612,6 +2616,11 @@ do_copy_file(struct worker_common* wc)
    {
       pgmoneta_log_error("Could not create directory: %s", dn);
       goto error;
+   }
+
+   if (pgmoneta_exists(to))
+   {
+      pgmoneta_delete_file(to, NULL);
    }
 
    fd_to = open(to, flags_to, permissions);
@@ -2777,6 +2786,104 @@ pgmoneta_move_file(char* from, char* to)
    }
 
    return ret;
+}
+
+int
+pgmoneta_fopen_secure(char* path, char* mode, FILE** file)
+{
+   int fd = -1;
+   int flags = 0;
+   bool create = false;
+   bool read = false;
+   bool write = false;
+   bool append = false;
+   bool plus = false;
+
+   *file = NULL;
+
+   if (strchr(mode, 'r'))
+   {
+      read = true;
+   }
+   if (strchr(mode, 'w'))
+   {
+      write = true;
+      create = true;
+   }
+   if (strchr(mode, 'a'))
+   {
+      append = true;
+      create = true;
+   }
+   if (strchr(mode, '+'))
+   {
+      plus = true;
+   }
+
+   if (plus)
+   {
+      flags |= O_RDWR;
+   }
+   else if (read)
+   {
+      flags |= O_RDONLY;
+   }
+   else
+   {
+      flags |= O_WRONLY;
+   }
+
+   if (create)
+   {
+      flags |= O_CREAT;
+      if (write)
+      {
+         flags |= O_TRUNC;
+      }
+   }
+
+   if (append)
+   {
+      flags |= O_APPEND;
+   }
+
+   if (create || write || append)
+   {
+      flags |= O_NOFOLLOW;
+   }
+   flags |= O_CLOEXEC;
+
+   if (create)
+   {
+      fd = open(path, flags, S_IRUSR | S_IWUSR);
+   }
+   else
+   {
+      fd = open(path, flags);
+   }
+
+   if (fd == -1)
+   {
+      if (errno == EEXIST)
+      {
+         return 1;
+      }
+      return 2;
+   }
+
+   if (create)
+   {
+      pgmoneta_permission(path, 6, 0, 0);
+   }
+
+   *file = fdopen(fd, mode);
+   if (*file == NULL)
+   {
+      close(fd);
+      return 2;
+   }
+
+   return 0;
 }
 
 int
