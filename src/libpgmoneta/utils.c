@@ -2654,7 +2654,7 @@ do_copy_file(struct worker_common* wc)
           * Close and reopen destination without O_DIRECT for tail write. */
          pgmoneta_log_debug("Partial block detected (%zu bytes, alignment %zu), switching to buffered I/O for tail", nread, alignment);
          close(fd_to);
-         flags_to &= ~O_DIRECT;
+         flags_to &= ~(O_DIRECT | O_CREAT | O_TRUNC | O_EXCL);
          fd_to = open(to, flags_to | O_APPEND, permissions);
          if (fd_to < 0)
          {
@@ -2683,7 +2683,7 @@ do_copy_file(struct worker_common* wc)
             {
                pgmoneta_log_debug("O_DIRECT write failed for %s (EINVAL), falling back to buffered I/O", to);
                close(fd_to);
-               flags_to &= ~O_DIRECT;
+               flags_to &= ~(O_DIRECT | O_CREAT | O_TRUNC | O_EXCL);
                fd_to = open(to, flags_to | O_APPEND, permissions);
                if (fd_to < 0)
                {
