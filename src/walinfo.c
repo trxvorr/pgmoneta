@@ -1791,8 +1791,7 @@ draw_main_content(struct ui_state* state)
 
          /* description in GREEN or HIGHLIGHT */
          char desc_display[512];
-         strncpy(desc_display, rec_ui->description, sizeof(desc_display) - 1);
-         desc_display[sizeof(desc_display) - 1] = '\0';
+         pgmoneta_snprintf(desc_display, sizeof(desc_display), "%s", rec_ui->description);
 
          /* Replace newlines with spaces */
          for (int j = 0; desc_display[j] != '\0'; j++)
@@ -2627,8 +2626,7 @@ show_wal_file_selector(struct ui_state* state)
                if (strlen(entry->d_name) >= 24)
                {
                   char prefix[25];
-                  strncpy(prefix, entry->d_name, 24);
-                  prefix[24] = '\0';
+                  pgmoneta_snprintf(prefix, sizeof(prefix), "%.24s", entry->d_name);
 
                   bool is_hex = true;
                   for (int i = 0; i < 24; i++)

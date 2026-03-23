@@ -455,6 +455,12 @@ pgmoneta_test_exec_command(const char* command, char** output, int* exit_code)
    {
       *exit_code = WEXITSTATUS(status);
    }
+   else if (WIFSIGNALED(status))
+   {
+      int sig = WTERMSIG(status);
+      pgmoneta_log_error("Process killed by signal %d (%s)", sig, strsignal(sig));
+      *exit_code = 128 + sig;
+   }
    else
    {
       *exit_code = 1;
