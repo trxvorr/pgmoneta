@@ -336,6 +336,8 @@ pgmoneta-cli ping
 ## progress
 
 Get progress for a command. Requires `progress = on` in the configuration.
+Progress is reported for backup operations and restore operations, including
+full backup restore and incremental backup restore.
 
 Command
 
@@ -430,7 +432,7 @@ Example
 pgmoneta-cli conf reload
 pgmoneta-cli conf ls
 pgmoneta-cli conf get server.primary.host
-pgmoneta-cli conf set encryption aes-256-cbc
+pgmoneta-cli conf set encryption aes-256-gcm
 ```
 ### conf get
 
@@ -510,14 +512,12 @@ pgmoneta-cli s3 <action> <arguments>
 Subcommand
 
 - `ls` : List all the files in s3
-- `delete` : Delete all files under a remote prefix in s3
 - `restore` : Download a backup from s3 to the local backup directory
 
 Example
 
 ```sh
 pgmoneta-cli s3 ls primary
-pgmoneta-cli s3 delete primary 20260302163357
 pgmoneta-cli s3 restore primary 20260316000957
 ```
 ### s3 ls
@@ -531,19 +531,6 @@ Examples
 ```sh
 pgmoneta-cli s3 ls primary
 pgmoneta-cli s3 ls
-```
-
-### s3 delete
-
-Delete all server files/objects in remote storage s3 under a given prefix.
-
-- prefix is relative to `<s3_base_dir>/<server>/backup/`
-
-Examples
-
-```sh
-pgmoneta-cli s3 delete primary 20260302163357/
-pgmoneta-cli s3 delete primary wal/
 ```
 
 ### s3 restore

@@ -30,7 +30,7 @@
 #include <pgmoneta.h>
 #include <achv.h>
 #include <backup.h>
-#include <extraction.h>
+#include <files.h>
 #include <logging.h>
 #include <management.h>
 #include <manifest.h>
@@ -52,7 +52,7 @@
 
 #define NAME "archive"
 
-static const char* basebackup_archive_extension(void);
+static char* basebackup_archive_extension(void);
 
 void
 pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8_t encryption, struct json* payload)
@@ -241,10 +241,10 @@ pgmoneta_archive(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
 
 error:
 
-   pgmoneta_management_response_error(ssl, client_fd,
-                                      config->common.servers[server].name,
-                                      ec != -1 ? ec : MANAGEMENT_ERROR_ARCHIVE_ERROR, en != NULL ? en : NAME,
-                                      compression, encryption, payload);
+   pgmoneta_management_response_error_with_nodes(ssl, client_fd,
+                                                 config->common.servers[server].name,
+                                                 ec != -1 ? ec : MANAGEMENT_ERROR_ARCHIVE_ERROR, en != NULL ? en : NAME,
+                                                 compression, encryption, payload, nodes);
 
    pgmoneta_art_destroy(nodes);
 
@@ -274,15 +274,13 @@ pgmoneta_receive_archive_files(int srv, SSL* ssl, int socket, struct stream_buff
    char null_buffer[2 * 512]; // 2 tar block size of terminator null bytes
    FILE* file = NULL;
    struct query_response* response = NULL;
-   struct message* msg = (struct message*)malloc(sizeof(struct message));
+   struct message* msg = NULL;
    struct tuple* tup = NULL;
    struct art* file_sizes = NULL;
    struct art* file_checksums = NULL;
 
    pgmoneta_art_create(&file_sizes);
    pgmoneta_art_create(&file_checksums);
-
-   memset(msg, 0, sizeof(struct message));
 
    // Receive the second result set
    if (pgmoneta_consume_data_row_messages(srv, ssl, socket, buffer, &response))
@@ -294,9 +292,11 @@ pgmoneta_receive_archive_files(int srv, SSL* ssl, int socket, struct stream_buff
    {
       char file_path[MAX_PATH];
       char directory[MAX_PATH];
-      const char* archive_ext = basebackup_archive_extension();
+      char manifest_prefix[MAX_PATH];
+      char* archive_ext = basebackup_archive_extension();
       memset(file_path, 0, sizeof(file_path));
       memset(directory, 0, sizeof(directory));
+      memset(manifest_prefix, 0, sizeof(manifest_prefix));
       if (tup->data[1] == NULL)
       {
          // main data directory
@@ -324,6 +324,7 @@ pgmoneta_receive_archive_files(int srv, SSL* ssl, int socket, struct stream_buff
             }
             tblspc = tblspc->next;
          }
+         pgmoneta_snprintf(manifest_prefix, sizeof(manifest_prefix), "pg_tblspc/%d/", tblspc->oid);
          if (pgmoneta_ends_with(basedir, "/"))
          {
             pgmoneta_snprintf(file_path, sizeof(file_path), "%stblspc_%s/%s%s", basedir, tblspc->name, tblspc->name, archive_ext);
@@ -336,14 +337,23 @@ pgmoneta_receive_archive_files(int srv, SSL* ssl, int socket, struct stream_buff
          }
       }
       pgmoneta_mkdir(directory);
-      file = fopen(file_path, "wb");
-      if (file == NULL)
+      if (pgmoneta_fopen_secure(file_path, "wb", &file))
       {
          pgmoneta_log_error("Could not create archive tar file");
          goto error;
       }
+
+      msg = (struct message*)malloc(sizeof(struct message));
+      if (msg == NULL)
+      {
+         pgmoneta_log_error("Failed to allocate memory for msg");
+         goto error;
+      }
+
+      memset(msg, 0, sizeof(struct message));
+
       // get the copy out response
-      while (msg == NULL || msg->kind != 'H')
+      while (msg != NULL && msg->kind != 'H')
       {
          pgmoneta_consume_copy_stream_start(srv, ssl, socket, buffer, msg);
          if (msg->kind == 'E' || msg->kind == 'f')
@@ -394,7 +404,7 @@ pgmoneta_receive_archive_files(int srv, SSL* ssl, int socket, struct stream_buff
       fclose(file);
 
       // extract the file
-      if (pgmoneta_extract_backup_tar_file(file_path, directory, file_checksums, file_sizes))
+      if (pgmoneta_extract_backup_tar_file(file_path, directory, manifest_prefix, file_checksums, file_sizes))
       {
          goto error;
       }
@@ -464,6 +474,7 @@ error:
       pgmoneta_disconnect(socket);
    }
    pgmoneta_free_query_response(response);
+   msg->data = NULL;
    pgmoneta_free_message(msg);
    return 1;
 }
@@ -481,6 +492,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
    char link_path[MAX_PATH];
    char tmp_manifest_file_path[MAX_PATH];
    char manifest_file_path[MAX_PATH];
+   char manifest_prefix[MAX_PATH];
    struct art* file_sizes = NULL;
    struct art* file_checksums = NULL;
 
@@ -489,6 +501,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
    memset(link_path, 0, sizeof(link_path));
    memset(manifest_file_path, 0, sizeof(manifest_file_path));
    memset(tmp_manifest_file_path, 0, sizeof(tmp_manifest_file_path));
+   memset(manifest_prefix, 0, sizeof(manifest_prefix));
    memset(null_buffer, 0, 2 * 512);
    char type;
    FILE* file = NULL;
@@ -525,7 +538,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
       pgmoneta_progress_set_total(srv, total_size);
       pgmoneta_log_debug("Backup progress: total size %" PRId64 " bytes", total_size);
    }
-   while (msg == NULL || msg->kind != 'H')
+   while (msg != NULL && msg->kind != 'H')
    {
       pgmoneta_consume_copy_stream_start(srv, ssl, socket, buffer, msg);
       if (msg->kind == 'E' || msg->kind == 'f')
@@ -568,7 +581,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
                   fflush(file);
                   fclose(file);
                   file = NULL;
-                  if (pgmoneta_extract_backup_tar_file(file_path, directory, file_checksums, file_sizes))
+                  if (pgmoneta_extract_backup_tar_file(file_path, directory, manifest_prefix, file_checksums, file_sizes))
                   {
                      goto error;
                   }
@@ -580,7 +593,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
 
                memset(file_path, 0, sizeof(file_path));
                memset(directory, 0, sizeof(directory));
-               const char* archive_ext = basebackup_archive_extension();
+               char* archive_ext = basebackup_archive_extension();
                // The tablespace order in the second result set is presumably the same as the order in which the server sends tablespaces
                tblspc = tablespaces;
                if (tup == NULL)
@@ -594,6 +607,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
                if (tup->data[1] == NULL)
                {
                   // main data directory
+                  memset(&manifest_prefix[0], 0, sizeof(manifest_prefix));
                   if (pgmoneta_ends_with(basedir, "/"))
                   {
                      pgmoneta_snprintf(file_path, sizeof(file_path), "%sdata/base%s", basedir, archive_ext);
@@ -618,6 +632,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
                      }
                      tblspc = tblspc->next;
                   }
+                  pgmoneta_snprintf(manifest_prefix, sizeof(manifest_prefix), "pg_tblspc/%d/", tblspc->oid);
                   if (pgmoneta_ends_with(basedir, "/"))
                   {
                      pgmoneta_snprintf(file_path, sizeof(file_path), "%stblspc_%s/%s%s", basedir, tblspc->name, tblspc->name, archive_ext);
@@ -630,8 +645,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
                   }
                }
                pgmoneta_mkdir(directory);
-               file = fopen(file_path, "wb");
-               if (file == NULL)
+               if (pgmoneta_fopen_secure(file_path, "wb", &file))
                {
                   pgmoneta_log_error("Could not create archive tar file");
                   goto error;
@@ -655,7 +669,7 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
                   fflush(file);
                   fclose(file);
                   file = NULL;
-                  if (pgmoneta_extract_backup_tar_file(file_path, directory, file_checksums, file_sizes))
+                  if (pgmoneta_extract_backup_tar_file(file_path, directory, manifest_prefix, file_checksums, file_sizes))
                   {
                      goto error;
                   }
@@ -671,7 +685,10 @@ pgmoneta_receive_archive_stream(int srv, SSL* ssl, int socket, struct stream_buf
                   pgmoneta_snprintf(tmp_manifest_file_path, sizeof(tmp_manifest_file_path), "%s/data/%s", basedir, "backup_manifest.tmp");
                   pgmoneta_snprintf(manifest_file_path, sizeof(manifest_file_path), "%s/data/%s", basedir, "backup_manifest");
                }
-               file = fopen(tmp_manifest_file_path, "wb");
+               if (pgmoneta_fopen_secure(tmp_manifest_file_path, "wb", &file))
+               {
+                  goto error;
+               }
                break;
             }
             case 'd':
@@ -795,7 +812,7 @@ error:
 }
 
 int
-pgmoneta_extract_backup_tar_file(char* file_path, char* destination, struct art* file_checksums, struct art* file_sizes)
+pgmoneta_extract_backup_tar_file(char* file_path, char* destination, char* manifest_prefix, struct art* file_checksums, struct art* file_sizes)
 {
    char* archive_name = NULL;
    struct archive* a;
@@ -887,7 +904,7 @@ pgmoneta_extract_backup_tar_file(char* file_path, char* destination, struct art*
    {
       char dst_path[MAX_PATH];
       memset(dst_path, 0, sizeof(dst_path));
-      const char* entry_path = archive_entry_pathname(entry);
+      char* entry_path = (char*)archive_entry_pathname(entry);
       mode_t type = (mode_t)archive_entry_filetype(entry);
 
       if (!entry_path)
@@ -926,17 +943,23 @@ pgmoneta_extract_backup_tar_file(char* file_path, char* destination, struct art*
 
       if (type == AE_IFLNK)
       {
-         const char* target = archive_entry_symlink(entry);
+         char* target = (char*)archive_entry_symlink(entry);
+         char* link_path = NULL;
+
          if (target == NULL)
          {
             pgmoneta_log_error("untar: getting empty target");
             goto error;
          }
-         if (pgmoneta_symlink_file(dst_path, target))
+
+         link_path = pgmoneta_remove_suffix(dst_path, "/");
+         if (pgmoneta_symlink_file(link_path != NULL ? link_path : dst_path, target))
          {
             pgmoneta_log_error("Failed to create symlink from %s to %s", dst_path, target);
+            free(link_path);
             goto error;
          }
+         free(link_path);
       }
       else if (type == AE_IFREG)
       {
@@ -986,6 +1009,11 @@ pgmoneta_extract_backup_tar_file(char* file_path, char* destination, struct art*
             }
          }
          while (asize > 0);
+
+         if (manifest_prefix != NULL)
+         {
+            entry_path_cpy = pgmoneta_append(entry_path_cpy, manifest_prefix);
+         }
 
          entry_path_cpy = pgmoneta_append(entry_path_cpy, entry_path);
          pgmoneta_art_insert(file_sizes, entry_path_cpy, (uintptr_t)strm->written, ValueUInt64);
@@ -1039,7 +1067,7 @@ error:
    return 1;
 }
 
-static const char*
+static char*
 basebackup_archive_extension(void)
 {
    struct main_configuration* config;

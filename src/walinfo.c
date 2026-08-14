@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -47,6 +47,7 @@
 
 /* system */
 #include <err.h>
+#include <errno.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <libgen.h>
@@ -113,6 +114,7 @@ struct wal_record_ui
    uint32_t rec_len;
    uint32_t tot_len;
    uint32_t xid;
+   char timestamp[64];
    char description[512];
    char hex_data[512];
    bool verified;
@@ -1022,6 +1024,10 @@ wal_interactive_load_records(struct ui_state* state, char* wal_filename)
    struct walfile* wf = NULL;
    char* from = NULL;
    char* to = NULL;
+   struct deque_iterator* iter = NULL;
+   int ret = 0;
+   char secure_temp_dir[MAX_PATH];
+   bool secure_temp_dir_created = false;
 
    if (state->wf != NULL)
    {
@@ -1030,29 +1036,31 @@ wal_interactive_load_records(struct ui_state* state, char* wal_filename)
    }
 
    /* Extract compressed WAL file if needed */
-   from = pgmoneta_append(from, wal_filename);
-   to = pgmoneta_append(to, "/tmp/");
-   to = pgmoneta_append(to, basename((char*)wal_filename));
-
-   if (pgmoneta_extract_file(from, PGMONETA_FILE_TYPE_UNKNOWN, true, &to))
+   pgmoneta_snprintf(secure_temp_dir, sizeof(secure_temp_dir), "%s/pgmoneta-walinfo-XXXXXX", pgmoneta_get_tmpdir());
+   if (mkdtemp(secure_temp_dir) == NULL)
    {
-      free(from);
-      free(to);
-      return -1;
+      fprintf(stderr, "Failed to create temporary directory '%s': %s\n", secure_temp_dir, strerror(errno));
+      goto error;
+   }
+   secure_temp_dir_created = true;
+
+   from = pgmoneta_append(from, wal_filename);
+   to = pgmoneta_format_and_append(to, "%s/%s", secure_temp_dir, basename((char*)wal_filename));
+
+   if (pgmoneta_extract_file(from, PGMONETA_FILE_TYPE_UNKNOWN, true, NULL, &to))
+   {
+      goto error;
    }
 
    /* Read the WAL file using pgmoneta's function */
    if (pgmoneta_read_walfile(-1, to, &wf) != 0)
    {
-      pgmoneta_delete_file(to, NULL);
-      free(from);
-      free(to);
-      return -1;
+      goto error;
    }
 
    if (wf == NULL || wf->records == NULL)
    {
-      return -1;
+      goto error;
    }
 
    state->record_count = 0;
@@ -1068,19 +1076,16 @@ wal_interactive_load_records(struct ui_state* state, char* wal_filename)
 
       if (new_records == NULL)
       {
-         pgmoneta_destroy_walfile(wf);
-         return -1;
+         goto error;
       }
 
       state->records = new_records;
    }
 
    /* Create iterator to walk through records */
-   struct deque_iterator* iter = NULL;
    if (pgmoneta_deque_iterator_create(wf->records, &iter) != 0)
    {
-      pgmoneta_destroy_walfile(wf);
-      return -1;
+      goto error;
    }
 
    /* Process each record */
@@ -1104,9 +1109,7 @@ wal_interactive_load_records(struct ui_state* state, char* wal_filename)
 
          if (new_records == NULL)
          {
-            pgmoneta_deque_iterator_destroy(iter);
-            pgmoneta_destroy_walfile(wf);
-            return -1;
+            goto error;
          }
 
          state->records = new_records;
@@ -1146,6 +1149,31 @@ wal_interactive_load_records(struct ui_state* state, char* wal_filename)
 
       /* Transaction ID */
       rec_ui->xid = record->header.xl_xid;
+
+      /* get timestamp - either from record or lookup in XID timestamp map */
+      char* timestamp_str = NULL;
+      if (record->has_xact_timestamp)
+      {
+         timestamp_str = pgmoneta_wal_timestamptz_to_str(record->xact_timestamp);
+      }
+      else if (wf->xid_ts_map != NULL && rec_ui->xid != INVALID_TRANSACTION_ID)
+      {
+         timestamp_tz ts = 0;
+         if (pgmoneta_xid_timestamp_map_get(wf->xid_ts_map, rec_ui->xid, &ts) == 0)
+         {
+            timestamp_str = pgmoneta_wal_timestamptz_to_str(ts);
+         }
+      }
+
+      if (timestamp_str != NULL)
+      {
+         pgmoneta_snprintf(rec_ui->timestamp, sizeof(rec_ui->timestamp), "%s", timestamp_str);
+         /* No free needed - pgmoneta_wal_timestamptz_to_str returns static buffer */
+      }
+      else
+      {
+         rec_ui->timestamp[0] = '\0';
+      }
 
       /* Get human-readable description */
       char* desc = get_simple_record_description(record, wf->magic_number);
@@ -1190,17 +1218,10 @@ wal_interactive_load_records(struct ui_state* state, char* wal_filename)
       state->record_count++;
    }
 
-   pgmoneta_deque_iterator_destroy(iter);
    state->wf = wf;
+   ret = 0;
 
-   /* Clean up temporary extracted file */
-   if (to != NULL)
-   {
-      pgmoneta_delete_file(to, NULL);
-      free(to);
-   }
-   free(from);
-
+   /* Rebuild the LSN index, only on success since state->wf is destroyed on error */
    state->record_count_unfiltered = state->record_count;
 
    if (state->lsn_art != NULL)
@@ -1226,7 +1247,28 @@ wal_interactive_load_records(struct ui_state* state, char* wal_filename)
       }
    }
 
-   return 0;
+   goto cleanup;
+
+error:
+   ret = -1;
+   pgmoneta_destroy_walfile(wf);
+
+cleanup:
+   if (iter != NULL)
+   {
+      pgmoneta_deque_iterator_destroy(iter);
+   }
+   if (to != NULL)
+   {
+      free(to);
+   }
+   if (secure_temp_dir_created)
+   {
+      pgmoneta_delete_directory(secure_temp_dir);
+   }
+   free(from);
+
+   return ret;
 }
 
 /**
@@ -1625,8 +1667,7 @@ generate_walfilter_yaml(struct ui_state* state)
    strftime(filename, sizeof(filename), "walfilter_rules_%Y%m%d_%H%M%S.yaml", tm_info);
 
    // Open file
-   yaml_file = fopen(filename, "w");
-   if (yaml_file == NULL)
+   if (pgmoneta_fopen_secure(filename, "w", &yaml_file))
    {
       goto error;
    }
@@ -1889,7 +1930,7 @@ wal_search(struct ui_state* state, struct wal_search_criteria* criteria)
       to = pgmoneta_append(NULL, "/tmp/");
       to = pgmoneta_append(to, filename);
 
-      if (pgmoneta_extract_file(from, PGMONETA_FILE_TYPE_UNKNOWN, true, &to) != 0)
+      if (pgmoneta_extract_file(from, PGMONETA_FILE_TYPE_UNKNOWN, true, NULL, &to) != 0)
       {
          pgmoneta_log_error("Failed to extract file: %s", filename);
          goto cleanup_iteration;
@@ -2547,6 +2588,7 @@ draw_main_content(struct ui_state* state)
    const int rec_width = 7;
    const int tot_width = 7;
    const int xid_width = 7;
+   const int ts_width = 22;
 
    /* Draw column headers with exact formatting */
    wattron(state->main_win, A_BOLD | A_UNDERLINE);
@@ -2588,6 +2630,12 @@ draw_main_content(struct ui_state* state)
    mvwprintw(state->main_win, 1, col, "%-*s", xid_width, "XID");
    wattroff(state->main_win, COLOR_PAIR(10));
    col += xid_width + 3;
+
+   /* timestamp header in MAGENTA */
+   wattron(state->main_win, COLOR_PAIR(7));
+   mvwprintw(state->main_win, 1, col, "%-*s", ts_width, "Timestamp");
+   wattroff(state->main_win, COLOR_PAIR(7));
+   col += ts_width + 3;
 
    /* description header in GREEN */
    wattron(state->main_win, COLOR_PAIR(11));
@@ -2714,6 +2762,22 @@ draw_main_content(struct ui_state* state)
          mvwprintw(state->main_win, i + 2, col, "%-*u", xid_width, rec_ui->xid);
          wattroff(state->main_win, COLOR_PAIR(15) | COLOR_PAIR(10) | A_BOLD);
          col += xid_width;
+         mvwprintw(state->main_win, i + 2, col, " | ");
+         col += 3;
+
+         /* timestamp in MAGENTA or HIGHLIGHT */
+         if (is_highlighted_row && state->highlight_count > 0 &&
+             state->current_search_field == WAL_SEARCH_FIELD_DESCRIPTION)
+         {
+            wattron(state->main_win, COLOR_PAIR(15) | A_BOLD);
+         }
+         else
+         {
+            wattron(state->main_win, COLOR_PAIR(7));
+         }
+         mvwprintw(state->main_win, i + 2, col, "%-*s", ts_width, rec_ui->timestamp);
+         wattroff(state->main_win, COLOR_PAIR(15) | COLOR_PAIR(7) | A_BOLD);
+         col += ts_width;
          mvwprintw(state->main_win, i + 2, col, " | ");
          col += 3;
 
@@ -2855,6 +2919,13 @@ show_detail_view(struct ui_state* state)
    wattron(detail_win, COLOR_PAIR(10));
    mvwprintw(detail_win, row, 17, "%u", rec_ui->xid);
    wattroff(detail_win, COLOR_PAIR(10));
+   row++;
+
+   /* timestamp in MAGENTA */
+   mvwprintw(detail_win, row, 2, "Timestamp:     ");
+   wattron(detail_win, COLOR_PAIR(7));
+   mvwprintw(detail_win, row, 17, "%s", rec_ui->timestamp);
+   wattroff(detail_win, COLOR_PAIR(7));
    row++;
 
    /* Valid status */
@@ -3906,7 +3977,7 @@ show_wal_file_selector(struct ui_state* state)
       struct dirent* entry;
       while ((entry = readdir(dir)) != NULL)
       {
-         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -4073,7 +4144,7 @@ show_wal_file_selector(struct ui_state* state)
                   char target_dir[MAX_PATH * 2];
                   char* first_wal_path = NULL;
 
-                  if (strcmp(entries[selected].name, "..") == 0)
+                  if (pgmoneta_compare_string(entries[selected].name, ".."))
                   {
                      pgmoneta_snprintf(target_dir, sizeof(target_dir), "%s", current_dir);
 
@@ -4091,7 +4162,7 @@ show_wal_file_selector(struct ui_state* state)
                   {
                      pgmoneta_snprintf(target_dir, sizeof(target_dir), "%s%s%s",
                                        current_dir,
-                                       strcmp(current_dir, "/") == 0 ? "" : "/",
+                                       pgmoneta_compare_string(current_dir, "/") ? "" : "/",
                                        entries[selected].name);
 
                      if (wal_interactive_get_first_wal_path(target_dir, &first_wal_path) == 0)
@@ -4211,7 +4282,7 @@ show_previous_wal_file(struct ui_state* state)
 
    for (int i = 0; i < num_files; i++)
    {
-      if (strcmp(file_list[i], current_basename) == 0)
+      if (pgmoneta_compare_string(file_list[i], current_basename))
       {
          current_index = i;
          break;
@@ -4323,7 +4394,7 @@ show_next_wal_file(struct ui_state* state)
 
    for (int i = 0; i < num_files; i++)
    {
-      if (strcmp(file_list[i], current_basename) == 0)
+      if (pgmoneta_compare_string(file_list[i], current_basename))
       {
          current_index = i;
          break;
@@ -5154,23 +5225,23 @@ main(int argc, char** argv)
       {
          break;
       }
-      else if (!strcmp(optname, "c") || !strcmp(optname, "config"))
+      else if (pgmoneta_compare_string(optname, "c") || pgmoneta_compare_string(optname, "config"))
       {
          configuration_path = optarg;
       }
-      else if (!strcmp(optname, "I") || !strcmp(optname, "interactive"))
+      else if (pgmoneta_compare_string(optname, "I") || pgmoneta_compare_string(optname, "interactive"))
       {
          interactive = true;
       }
-      else if (!strcmp(optname, "o") || !strcmp(optname, "output"))
+      else if (pgmoneta_compare_string(optname, "o") || pgmoneta_compare_string(optname, "output"))
       {
          output = optarg;
       }
-      else if (!strcmp(optname, "F") || !strcmp(optname, "format"))
+      else if (pgmoneta_compare_string(optname, "F") || pgmoneta_compare_string(optname, "format"))
       {
          format = optarg;
 
-         if (!strcmp(format, "json"))
+         if (pgmoneta_compare_string(format, "json"))
          {
             type = ValueJSON;
          }
@@ -5179,17 +5250,17 @@ main(int argc, char** argv)
             type = ValueString;
          }
       }
-      else if (!strcmp(optname, "L") || !strcmp(optname, "logfile"))
+      else if (pgmoneta_compare_string(optname, "L") || pgmoneta_compare_string(optname, "logfile"))
       {
          logfile = optarg;
       }
-      else if (!strcmp(optname, "q") || !strcmp(optname, "quiet"))
+      else if (pgmoneta_compare_string(optname, "q") || pgmoneta_compare_string(optname, "quiet"))
       {
          quiet = true;
       }
-      else if (!strcmp(optname, "color"))
+      else if (pgmoneta_compare_string(optname, "color"))
       {
-         if (!strcmp(optarg, "off"))
+         if (pgmoneta_compare_string(optarg, "off"))
          {
             color = false;
          }
@@ -5198,7 +5269,7 @@ main(int argc, char** argv)
             color = true;
          }
       }
-      else if (!strcmp(optname, "r") || !strcmp(optname, "rmgr"))
+      else if (pgmoneta_compare_string(optname, "r") || pgmoneta_compare_string(optname, "rmgr"))
       {
          if (rms == NULL)
          {
@@ -5210,7 +5281,7 @@ main(int argc, char** argv)
 
          pgmoneta_deque_add(rms, NULL, (uintptr_t)optarg, ValueString);
       }
-      else if (!strcmp(optname, "s") || !strcmp(optname, "start"))
+      else if (pgmoneta_compare_string(optname, "s") || pgmoneta_compare_string(optname, "start"))
       {
          if (strchr(optarg, '/'))
          {
@@ -5230,7 +5301,7 @@ main(int argc, char** argv)
             start_lsn = strtoull(optarg, NULL, 10); // Assuming optarg is a decimal number
          }
       }
-      else if (!strcmp(optname, "e") || !strcmp(optname, "end"))
+      else if (pgmoneta_compare_string(optname, "e") || pgmoneta_compare_string(optname, "end"))
       {
          if (strchr(optarg, '/'))
          {
@@ -5250,7 +5321,7 @@ main(int argc, char** argv)
             end_lsn = strtoull(optarg, NULL, 10); // Assuming optarg is a decimal number
          }
       }
-      else if (!strcmp(optname, "x") || !strcmp(optname, "xid"))
+      else if (pgmoneta_compare_string(optname, "x") || pgmoneta_compare_string(optname, "xid"))
       {
          if (xids == NULL)
          {
@@ -5262,57 +5333,57 @@ main(int argc, char** argv)
 
          pgmoneta_deque_add(xids, NULL, (uintptr_t)pgmoneta_atoi(optarg), ValueUInt32);
       }
-      else if (!strcmp(optname, "l") || !strcmp(optname, "limit"))
+      else if (pgmoneta_compare_string(optname, "l") || pgmoneta_compare_string(optname, "limit"))
       {
          limit = pgmoneta_atoi(optarg);
       }
-      else if (!strcmp(optname, "m") || !strcmp(optname, "mapping"))
+      else if (pgmoneta_compare_string(optname, "m") || pgmoneta_compare_string(optname, "mapping"))
       {
          enable_mapping = true;
          mappings_path = optarg;
       }
-      else if (!strcmp(optname, "t") || !strcmp(optname, "translate"))
+      else if (pgmoneta_compare_string(optname, "t") || pgmoneta_compare_string(optname, "translate"))
       {
          enable_mapping = true;
       }
-      else if (!strcmp(optname, "RT") || !strcmp(optname, "tablespaces"))
+      else if (pgmoneta_compare_string(optname, "RT") || pgmoneta_compare_string(optname, "tablespaces"))
       {
          tablespaces = optarg;
          filtering_enabled = true;
       }
-      else if (!strcmp(optname, "RD") || !strcmp(optname, "databases"))
+      else if (pgmoneta_compare_string(optname, "RD") || pgmoneta_compare_string(optname, "databases"))
       {
          databases = optarg;
          filtering_enabled = true;
       }
-      else if (!strcmp(optname, "RR") || !strcmp(optname, "relations"))
+      else if (pgmoneta_compare_string(optname, "RR") || pgmoneta_compare_string(optname, "relations"))
       {
          relations = optarg;
          filtering_enabled = true;
       }
-      else if (!strcmp(optname, "R") || !strcmp(optname, "filter"))
+      else if (pgmoneta_compare_string(optname, "R") || pgmoneta_compare_string(optname, "filter"))
       {
          filters = optarg;
          filtering_enabled = true;
       }
-      else if (!strcmp(optname, "u") || !strcmp(optname, "users"))
+      else if (pgmoneta_compare_string(optname, "u") || pgmoneta_compare_string(optname, "users"))
       {
          users_path = optarg;
       }
-      else if (!strcmp(optname, "v") || !strcmp(optname, "verbose"))
+      else if (pgmoneta_compare_string(optname, "v") || pgmoneta_compare_string(optname, "verbose"))
       {
          verbose = true;
       }
-      else if (!strcmp(optname, "S") || !strcmp(optname, "summary"))
+      else if (pgmoneta_compare_string(optname, "S") || pgmoneta_compare_string(optname, "summary"))
       {
          summary = true;
       }
-      else if (!strcmp(optname, "V") || !strcmp(optname, "version"))
+      else if (pgmoneta_compare_string(optname, "V") || pgmoneta_compare_string(optname, "version"))
       {
          version();
          exit(0);
       }
-      else if (!strcmp(optname, "?") || !strcmp(optname, "help"))
+      else if (pgmoneta_compare_string(optname, "?") || pgmoneta_compare_string(optname, "help"))
       {
          usage();
          exit(0);
@@ -5584,7 +5655,10 @@ main(int argc, char** argv)
    }
    else
    {
-      out = fopen(output, "w");
+      if (pgmoneta_fopen_secure(output, "w", &out))
+      {
+         goto error;
+      }
       color = false;
    }
 
@@ -5996,17 +6070,33 @@ describe_walfile_internal(char* path, enum value_type type, FILE* out, bool quie
    struct column_widths local_widths = {0};
    struct column_widths* widths = provided_widths ? provided_widths : &local_widths;
 
+   char secure_temp_dir[MAX_PATH];
+   bool secure_temp_dir_created = false;
+   int ret = 0;
+
    if (!pgmoneta_is_file(path))
    {
       pgmoneta_log_error("WAL file at %s does not exist", path);
       goto error;
    }
 
-   from = pgmoneta_append(from, path);
-   to = pgmoneta_append(to, "/tmp/");
-   to = pgmoneta_append(to, basename(path));
+   pgmoneta_snprintf(secure_temp_dir, sizeof(secure_temp_dir), "%s/pgmoneta-walinfo-XXXXXX", pgmoneta_get_tmpdir());
+   if (mkdtemp(secure_temp_dir) == NULL)
+   {
+      pgmoneta_log_error("Failed to create secure temporary directory: %s", strerror(errno));
+      goto error;
+   }
+   secure_temp_dir_created = true;
 
-   if (pgmoneta_extract_file(from, PGMONETA_FILE_TYPE_UNKNOWN, true, &to))
+   from = pgmoneta_append(from, path);
+   to = pgmoneta_format_and_append(to, "%s/%s", secure_temp_dir, basename(path));
+
+   if (pgmoneta_exists(to))
+   {
+      pgmoneta_delete_file(to, NULL);
+   }
+
+   if (pgmoneta_extract_file(from, PGMONETA_FILE_TYPE_UNKNOWN, true, NULL, &to))
    {
       pgmoneta_log_error("Failed to extract WAL file from %s to %s", from, to);
       goto error;
@@ -6046,7 +6136,7 @@ describe_walfile_internal(char* path, enum value_type type, FILE* out, bool quie
          else
          {
             pgmoneta_wal_record_display(record, wf->long_phd->std.xlp_magic, type, out, quiet, color,
-                                        rms, start_lsn, end_lsn, xids, limit, included_objects, widths);
+                                        rms, start_lsn, end_lsn, xids, limit, included_objects, widths, wf->xid_ts_map);
          }
       }
 
@@ -6067,35 +6157,33 @@ describe_walfile_internal(char* path, enum value_type type, FILE* out, bool quie
          else
          {
             pgmoneta_wal_record_display(record, wf->long_phd->std.xlp_magic, type, out, quiet, color,
-                                        rms, start_lsn, end_lsn, xids, limit, included_objects, widths);
+                                        rms, start_lsn, end_lsn, xids, limit, included_objects, widths, wf->xid_ts_map);
          }
       }
    }
 
-   free(from);
-   pgmoneta_deque_iterator_destroy(record_iterator);
-   pgmoneta_destroy_walfile(wf);
-
-   if (to != NULL)
-   {
-      pgmoneta_delete_file(to, NULL);
-      free(to);
-   }
-
-   return 0;
+   ret = 0;
+   goto cleanup;
 
 error:
-   free(from);
-   pgmoneta_destroy_walfile(wf);
+   ret = 1;
+
+cleanup:
    pgmoneta_deque_iterator_destroy(record_iterator);
+   pgmoneta_destroy_walfile(wf);
+   free(from);
 
    if (to != NULL)
    {
-      pgmoneta_delete_file(to, NULL);
       free(to);
    }
 
-   return 1;
+   if (secure_temp_dir_created)
+   {
+      pgmoneta_delete_directory(secure_temp_dir);
+   }
+
+   return ret;
 }
 
 static int
@@ -6129,12 +6217,27 @@ describe_walfiles_in_directory(char* dir_path, enum value_type type, FILE* outpu
             continue;
          }
 
-         from = pgmoneta_append(from, file_path);
-         to = pgmoneta_append(to, "/tmp/");
-         to = pgmoneta_append(to, basename(file_path));
-
-         if (pgmoneta_extract_file(from, PGMONETA_FILE_TYPE_UNKNOWN, true, &to))
+         char secure_temp_dir[MAX_PATH];
+         pgmoneta_snprintf(secure_temp_dir, sizeof(secure_temp_dir), "%s/pgmoneta-walinfo-XXXXXX", pgmoneta_get_tmpdir());
+         if (mkdtemp(secure_temp_dir) == NULL)
          {
+            free(from);
+            from = NULL;
+            continue;
+         }
+
+         from = pgmoneta_append(from, file_path);
+         if (from == NULL)
+         {
+            pgmoneta_delete_directory(secure_temp_dir);
+            continue;
+         }
+
+         to = pgmoneta_format_and_append(to, "%s/%s", secure_temp_dir, basename(file_path));
+
+         if (pgmoneta_extract_file(from, PGMONETA_FILE_TYPE_UNKNOWN, true, NULL, &to))
+         {
+            pgmoneta_delete_directory(secure_temp_dir);
             free(from);
             free(to);
             from = NULL;
@@ -6151,10 +6254,10 @@ describe_walfiles_in_directory(char* dir_path, enum value_type type, FILE* outpu
 
          if (to != NULL)
          {
-            pgmoneta_delete_file(to, NULL);
             free(to);
             to = NULL;
          }
+         pgmoneta_delete_directory(secure_temp_dir);
          free(from);
          from = NULL;
       }
@@ -6189,7 +6292,6 @@ error:
    free(from);
    if (to != NULL)
    {
-      pgmoneta_delete_file(to, NULL);
       free(to);
    }
    pgmoneta_destroy_walfile(wf);
@@ -6213,7 +6315,7 @@ prepare_wal_files_from_tar_archive(char* path, char** temp_dir, struct deque** w
    *temp_dir = NULL;
    *wal_files = NULL;
 
-   local_temp_dir = pgmoneta_append(local_temp_dir, "/tmp/pgmoneta_wal_XXXXXX");
+   local_temp_dir = pgmoneta_format_and_append(local_temp_dir, "%s/pgmoneta_wal_XXXXXX", pgmoneta_get_tmpdir());
    if (local_temp_dir == NULL)
    {
       pgmoneta_log_error("Failed to allocate temp directory template");
@@ -6262,7 +6364,7 @@ prepare_wal_files_from_tar_archive(char* path, char** temp_dir, struct deque** w
       goto error;
    }
 
-   if (pgmoneta_extract_file(archive_copy_path, PGMONETA_FILE_TYPE_UNKNOWN, false, &local_temp_dir))
+   if (pgmoneta_extract_file(archive_copy_path, PGMONETA_FILE_TYPE_UNKNOWN, false, NULL, &local_temp_dir))
    {
       pgmoneta_log_error("Failed to extract TAR archive: %s", path);
       goto error;

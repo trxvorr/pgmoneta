@@ -209,23 +209,23 @@ main(int argc, char** argv)
       {
          break;
       }
-      else if (!strcmp(optname, "U") || !strcmp(optname, "user"))
+      else if (pgmoneta_compare_string(optname, "U") || pgmoneta_compare_string(optname, "user"))
       {
          username = optarg;
       }
-      else if (!strcmp(optname, "P") || !strcmp(optname, "password"))
+      else if (pgmoneta_compare_string(optname, "P") || pgmoneta_compare_string(optname, "password"))
       {
          password = optarg;
       }
-      else if (!strcmp(optname, "f") || !strcmp(optname, "file"))
+      else if (pgmoneta_compare_string(optname, "f") || pgmoneta_compare_string(optname, "file"))
       {
          file_path = optarg;
       }
-      else if (!strcmp(optname, "g") || !strcmp(optname, "generate"))
+      else if (pgmoneta_compare_string(optname, "g") || pgmoneta_compare_string(optname, "generate"))
       {
          generate_pwd = true;
       }
-      else if (!strcmp(optname, "l") || !strcmp(optname, "length"))
+      else if (pgmoneta_compare_string(optname, "l") || pgmoneta_compare_string(optname, "length"))
       {
          char* endptr = NULL;
          long val;
@@ -238,11 +238,11 @@ main(int argc, char** argv)
          }
          pwd_length = (int)val;
       }
-      else if (!strcmp(optname, "V") || !strcmp(optname, "version"))
+      else if (pgmoneta_compare_string(optname, "V") || pgmoneta_compare_string(optname, "version"))
       {
          version();
       }
-      else if (!strcmp(optname, "F") || !strcmp(optname, "format"))
+      else if (pgmoneta_compare_string(optname, "F") || pgmoneta_compare_string(optname, "format"))
       {
          if (!strncmp(optarg, "json", MISC_LENGTH))
          {
@@ -258,7 +258,7 @@ main(int argc, char** argv)
             exit(1);
          }
       }
-      else if (!strcmp(optname, "?") || !strcmp(optname, "help"))
+      else if (pgmoneta_compare_string(optname, "?") || pgmoneta_compare_string(optname, "help"))
       {
          usage();
          exit(0);
@@ -423,8 +423,7 @@ master_key(char* password, bool generate_pwd, int pwd_length, int32_t output_for
       }
    }
 
-   file = fopen(&buf[0], "w+");
-   if (file == NULL)
+   if (pgmoneta_fopen_secure(&buf[0], "w+x", &file))
    {
       warn("Could not write to master key file '%s'", &buf[0]);
       goto error;
@@ -602,9 +601,9 @@ is_valid_key(char* key)
       return false;
    }
 
-   if (char_count > MAX_PASSWORD_CHARS)
+   if (strlen(key) >= MAX_PASSWORD_LENGTH)
    {
-      warnx("Master key too long (%zu characters). Maximum allowed: %d characters.", char_count, MAX_PASSWORD_CHARS);
+      warnx("Master key too long (%zu bytes). Maximum allowed: %d bytes.", strlen(key), MAX_PASSWORD_LENGTH - 1);
       return false;
    }
 
@@ -673,8 +672,7 @@ add_user(char* users_path, char* username, char* password, bool generate_pwd, in
       do_free = false;
    }
 
-   users_file = fopen(users_path, "a+");
-   if (users_file == NULL)
+   if (pgmoneta_fopen_secure(users_path, "a+", &users_file))
    {
       warn("Could not append to users file '%s'", users_path);
       goto error;
@@ -709,7 +707,7 @@ username:
          warnx("invalid users file line while adding user");
          goto error;
       }
-      if (!strcmp(username, ptr))
+      if (pgmoneta_compare_string(username, ptr))
       {
          warnx("Existing user: %s", username);
          goto error;
@@ -780,9 +778,9 @@ password:
       password = NULL;
       goto password;
    }
-   if (char_count > MAX_PASSWORD_CHARS)
+   if (strlen(password) >= MAX_PASSWORD_LENGTH)
    {
-      warnx("Password too long (%zu characters). Maximum allowed: %d characters.", char_count, MAX_PASSWORD_CHARS);
+      warnx("Password too long (%zu bytes). Maximum allowed: %d bytes.", strlen(password), MAX_PASSWORD_LENGTH - 1);
       if (do_free)
       {
          free(password);
@@ -831,9 +829,9 @@ password:
          password = NULL;
          goto password;
       }
-      if (verify_char_count > MAX_PASSWORD_CHARS)
+      if (strlen(verify) >= MAX_PASSWORD_LENGTH)
       {
-         warnx("Verification password too long (%zu characters). Maximum allowed: %d characters.", verify_char_count, MAX_PASSWORD_CHARS);
+         warnx("Verification password too long (%zu bytes). Maximum allowed: %d bytes.", strlen(verify), MAX_PASSWORD_LENGTH - 1);
          free(verify);
          verify = NULL;
          if (do_free)
@@ -1018,18 +1016,24 @@ update_user(char* users_path, char* username, char* password, bool generate_pwd,
       do_free = false;
    }
 
-   users_file = fopen(users_path, "r");
-   if (!users_file)
+   if (pgmoneta_fopen_secure(users_path, "r", &users_file))
    {
       warnx("%s not found\n", users_path);
       goto error;
    }
 
-   pgmoneta_snprintf(tmpfilename, sizeof(tmpfilename), "%s.tmp", users_path);
-   users_file_tmp = fopen(tmpfilename, "w+");
+   pgmoneta_snprintf(tmpfilename, sizeof(tmpfilename), "%sXXXXXX", users_path);
+   int fd = mkstemp(tmpfilename);
+   if (fd == -1)
+   {
+      warn("Could not create temporary file");
+      goto error;
+   }
+   users_file_tmp = fdopen(fd, "w+");
    if (users_file_tmp == NULL)
    {
-      warn("Could not write to temporary user file '%s'", tmpfilename);
+      warn("Could not open temporary file");
+      close(fd);
       goto error;
    }
 
@@ -1065,7 +1069,7 @@ username:
          warnx("invalid users file line while updating user");
          goto error;
       }
-      if (!strcmp(username, ptr))
+      if (pgmoneta_compare_string(username, ptr))
       {
          /* Password */
          if (password == NULL)
@@ -1122,9 +1126,9 @@ password:
             password = NULL;
             goto password;
          }
-         if (char_count > MAX_PASSWORD_CHARS)
+         if (strlen(password) >= MAX_PASSWORD_LENGTH)
          {
-            warnx("Password too long (%zu characters). Maximum allowed: %d characters.", char_count, MAX_PASSWORD_CHARS);
+            warnx("Password too long (%zu bytes). Maximum allowed: %d bytes.", strlen(password), MAX_PASSWORD_LENGTH - 1);
             if (do_free)
             {
                free(password);
@@ -1173,9 +1177,9 @@ password:
                password = NULL;
                goto password;
             }
-            if (verify_char_count > MAX_PASSWORD_CHARS)
+            if (strlen(verify) >= MAX_PASSWORD_LENGTH)
             {
-               warnx("Verification password too long (%zu characters). Maximum allowed: %d characters.", verify_char_count, MAX_PASSWORD_CHARS);
+               warnx("Verification password too long (%zu bytes). Maximum allowed: %d bytes.", strlen(verify), MAX_PASSWORD_LENGTH - 1);
                free(verify);
                verify = NULL;
                if (do_free)
@@ -1351,19 +1355,25 @@ remove_user(char* users_path, char* username, int32_t output_format)
       goto error;
    }
 
-   users_file = fopen(users_path, "r");
-   if (!users_file)
+   if (pgmoneta_fopen_secure(users_path, "r", &users_file))
    {
       warnx("%s not found", users_path);
       goto error;
    }
 
    memset(&tmpfilename, 0, sizeof(tmpfilename));
-   pgmoneta_snprintf(tmpfilename, sizeof(tmpfilename), "%s.tmp", users_path);
-   users_file_tmp = fopen(tmpfilename, "w+");
+   pgmoneta_snprintf(tmpfilename, sizeof(tmpfilename), "%sXXXXXX", users_path);
+   int fd = mkstemp(tmpfilename);
+   if (fd == -1)
+   {
+      warn("Could not create temporary file");
+      goto error;
+   }
+   users_file_tmp = fdopen(fd, "w+");
    if (users_file_tmp == NULL)
    {
-      warn("Could not write to temporary user file '%s'", tmpfilename);
+      warn("Could not open temporary file");
+      close(fd);
       goto error;
    }
 
@@ -1399,7 +1409,7 @@ username:
          warnx("invalid users file line while removing user");
          goto error;
       }
-      if (!strcmp(username, ptr))
+      if (pgmoneta_compare_string(username, ptr))
       {
          found = true;
       }
@@ -1511,8 +1521,7 @@ list_users(char* users_path, int32_t output_format)
       goto error;
    }
 
-   users_file = fopen(users_path, "r");
-   if (!users_file)
+   if (pgmoneta_fopen_secure(users_path, "r", &users_file))
    {
       goto error;
    }
@@ -1651,8 +1660,7 @@ create_response(char* users_path, struct json* json, struct json** response)
       goto error;
    }
 
-   users_file = fopen(users_path, "r");
-   if (!users_file)
+   if (pgmoneta_fopen_secure(users_path, "r", &users_file))
    {
       goto error;
    }

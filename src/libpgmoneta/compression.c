@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -29,7 +29,7 @@
 #include <aes.h>
 #include <bzip2_compression.h>
 #include <compression.h>
-#include <extraction.h>
+#include <files.h>
 #include <gzip_compression.h>
 #include <logging.h>
 #include <lz4_compression.h>
@@ -232,9 +232,9 @@ error:
 }
 
 int
-pgmoneta_decompress_directory(char* directory, int type, struct workers* workers, struct deque* excludes)
+pgmoneta_decompress_directory(int server, char* directory, int type, struct workers* workers, struct deque* excludes)
 {
-   return process_directory_operation(-1, directory, type, workers, excludes, true);
+   return process_directory_operation(server, directory, type, workers, excludes, true);
 }
 
 static bool
@@ -329,9 +329,10 @@ do_compression_operation(struct worker_common* wc)
       result = pgmoneta_compress_file(task->from, task->to, task->type, NULL);
    }
 
-   if (result != 0 && task->common.workers != NULL)
+   if (result != 0)
    {
-      task->common.workers->outcome = false;
+      pgmoneta_record_failure(task->common.workers != NULL ? task->common.workers->outcome : NULL,
+                              "%s failed: %s", task->decompress ? "Decompress" : "Compress", task->from);
    }
 
    if (task->progress_enabled)
@@ -354,7 +355,7 @@ dispatch_compression_operation(int server, char* from, char* to, int type, bool 
 
    if (workers != NULL)
    {
-      if (workers->outcome)
+      if (pgmoneta_workers_outcome_ok(workers))
       {
          if (pgmoneta_workers_add(workers, do_compression_operation, (struct worker_common*)task))
          {
@@ -419,7 +420,7 @@ process_directory_operation(int server, char* directory, int type, struct worker
    {
       char* to = NULL;
 
-      if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+      if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
       {
          continue;
       }

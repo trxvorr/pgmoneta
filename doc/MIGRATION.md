@@ -1,5 +1,22 @@
 # Migration
 
+## From 0.21.x to 0.22.x
+
+### MD5 Authentication Removal
+
+Legacy MD5 authentication has been completely removed from pgmoneta for improved security. This is a **breaking change** for any deployment still relying on MD5.
+
+**Action required:**
+
+1. **PostgreSQL Server**:
+   - Ensure `password_encryption = scram-sha-256` is set in `postgresql.conf`.
+   - Update `pg_hba.conf` to use `scram-sha-256` instead of `md5`.
+   - For existing users with MD5 passwords, you **must** reset their passwords while SCRAM encryption is active so that PostgreSQL generates SCRAM‑compatible verifiers.
+2. **pgmoneta**:
+   - Ensure the user configured in `pgmoneta.conf` uses `scram-sha-256` for database connectivity. MD5 is no longer a valid method.
+3. **Clients**:
+   - Ensure clients are compatible with `scram-sha-256` (standard for modern PostgreSQL drivers).
+
 ## From 0.20.x to 0.21.x
 
 ### Backup Rate Limit Configuration
@@ -33,9 +50,9 @@ The AES encryption format has been upgraded to use Authenticated Encryption with
 
 Legacy modes (**AES-CBC** and **AES-CTR**) have been **removed** for security and performance reasons. AES-GCM is now the only supported encryption method.
 
-Each encrypted file now starts with a unified 32-byte header:
+Each encrypted file now starts with a unified 28-byte header:
 * `Salt` (16 bytes)
-* `IV` (16 bytes)
+* `IV` (12 bytes)
 
 A unique, random Initialization Vector (IV) is generated for every encryption operation and stored in the header. For **AES-GCM**, an additional **Authentication Tag (16 bytes)** is stored at the **end of the data** (after the ciphertext). This unified format is used for streaming, file-based, and one-shot operations.
 

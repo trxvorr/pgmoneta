@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -166,11 +166,11 @@ pgmoneta_backup(int client_fd, int server, uint8_t compression, uint8_t encrypti
          goto error;
       }
 
-      if (!strcmp(incremental, "oldest"))
+      if (pgmoneta_compare_string(incremental, "oldest"))
       {
          backup_index = 0;
       }
-      else if (!strcmp(incremental, "latest") || !strcmp(incremental, "newest"))
+      else if (pgmoneta_compare_string(incremental, "latest") || pgmoneta_compare_string(incremental, "newest"))
       {
          backup_index = number_of_backups - 1;
       }
@@ -178,7 +178,7 @@ pgmoneta_backup(int client_fd, int server, uint8_t compression, uint8_t encrypti
       {
          for (int i = 0; backup_index == -1 && i < number_of_backups; i++)
          {
-            if (!strcmp(backups[i]->label, incremental))
+            if (pgmoneta_compare_string(backups[i]->label, incremental))
             {
                backup_index = i;
             }
@@ -327,9 +327,9 @@ error:
    config->common.servers[server].active_backup = false;
    atomic_store(&config->common.servers[server].repository, false);
 
-   pgmoneta_management_response_error(NULL, client_fd, config->common.servers[server].name,
-                                      ec != -1 ? ec : MANAGEMENT_ERROR_BACKUP_ERROR,
-                                      en != NULL ? en : WORKFLOW_NAME_BACKUP, compression, encryption, payload);
+   pgmoneta_management_response_error_with_nodes(NULL, client_fd, config->common.servers[server].name,
+                                                 ec != -1 ? ec : MANAGEMENT_ERROR_BACKUP_ERROR,
+                                                 en != NULL ? en : WORKFLOW_NAME_BACKUP, compression, encryption, payload, nodes);
 
    if (pgmoneta_exists(root))
    {
@@ -418,11 +418,11 @@ pgmoneta_list_backup(int client_fd, int server, uint8_t compression, uint8_t enc
       if (sort_order != NULL)
       {
          // Only accept valid sort orders: "asc" or "desc"
-         if (!strcmp(sort_order, "desc"))
+         if (pgmoneta_compare_string(sort_order, "desc"))
          {
             sort_desc = true;
          }
-         else if (!strcmp(sort_order, "asc"))
+         else if (pgmoneta_compare_string(sort_order, "asc"))
          {
             sort_desc = false;
          }
@@ -746,9 +746,9 @@ pgmoneta_delete_backup(int client_fd, int srv, uint8_t compression, uint8_t encr
 
 error:
 
-   pgmoneta_management_response_error(NULL, client_fd, config->common.servers[srv].name,
-                                      ec != -1 ? ec : MANAGEMENT_ERROR_DELETE_BACKUP_ERROR, en != NULL ? en : WORKFLOW_NAME_DELETE_BACKUP,
-                                      compression, encryption, payload);
+   pgmoneta_management_response_error_with_nodes(NULL, client_fd, config->common.servers[srv].name,
+                                                 ec != -1 ? ec : MANAGEMENT_ERROR_DELETE_BACKUP_ERROR, en != NULL ? en : WORKFLOW_NAME_DELETE_BACKUP,
+                                                 compression, encryption, payload, nodes);
 
    pgmoneta_art_destroy(nodes);
 

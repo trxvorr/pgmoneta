@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -28,11 +28,13 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
+#include <extraction.h>
+#include <files.h>
 #include <logging.h>
 #include <management.h>
 #include <manifest.h>
 #include <network.h>
-#include <extraction.h>
+#include <rfile.h>
 #include <restore.h>
 #include <security.h>
 #include <utils.h>
@@ -137,7 +139,8 @@ reconstruct_backup_file(int server,
                         struct deque* prior_labels,
                         struct art* backups,
                         bool incremental,
-                        struct json* files);
+                        struct json* files,
+                        struct deque* failures);
 
 static void
 do_reconstruct_backup_file(struct worker_common* wc);
@@ -164,6 +167,7 @@ create_reconstruct_backup_file_input(int server,
  * @param relative_dir The directory containing the file relative to the root dir, should be the same across all backups
  * @param file_name The name of the file
  * @param exclude Whether to exclude some of the files
+ * @param failures The failure deque
  * @return 0 on success, 1 if otherwise
  */
 static int
@@ -172,7 +176,8 @@ copy_backup_file(int server,
                  char* output_dir,
                  char* relative_dir,
                  char* file_name,
-                 bool exclude);
+                 bool exclude,
+                 struct deque* failures);
 
 static void
 do_copy_backup_file(struct worker_common* wc);
@@ -257,8 +262,8 @@ construct_backup_label_chain(int server, char* newest_label, char* oldest_label,
 static int
 file_base_name(char* file, char** basename);
 
-static int copy_tablespaces_restore(char* from, char* to, char* base,
-                                    char* server, char* id,
+static int copy_tablespaces_restore(int server, char* from, char* to,
+                                    char* base, char* id,
                                     struct backup* backup,
                                     struct workers* workers);
 static int copy_tablespaces_hotstandby(int server,
@@ -266,6 +271,12 @@ static int copy_tablespaces_hotstandby(int server,
                                        char* tblspc_mappings,
                                        struct backup* backup,
                                        struct workers* workers);
+
+int
+pgmoneta_get_restore_last_files_num(void)
+{
+   return sizeof(restore_last_files_names) / sizeof(restore_last_files_names[0]);
+}
 
 int
 pgmoneta_get_restore_last_files_names(char*** output)
@@ -496,7 +507,7 @@ pgmoneta_restore(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
             memcpy(&value[0], equal + 1, val_len);
          }
 
-         if (!strcmp(&key[0], "lsn"))
+         if (pgmoneta_compare_string(&key[0], "lsn"))
          {
             if (target_identifier != NULL)
             {
@@ -507,7 +518,7 @@ pgmoneta_restore(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
             target_identifier = pgmoneta_append(target_identifier, &value[0]);
             target_count++;
          }
-         else if (!strcmp(&key[0], "time"))
+         else if (pgmoneta_compare_string(&key[0], "time"))
          {
             if (target_identifier != NULL)
             {
@@ -518,19 +529,19 @@ pgmoneta_restore(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
             target_identifier = pgmoneta_append(target_identifier, &value[0]);
             target_count++;
          }
-         else if (!strcmp(&key[0], "current") || !strcmp(&key[0], "immediate"))
+         else if (pgmoneta_compare_string(&key[0], "current") || pgmoneta_compare_string(&key[0], "immediate"))
          {
             target_count++;
          }
-         else if (!strcmp(&key[0], "name"))
+         else if (pgmoneta_compare_string(&key[0], "name"))
          {
             target_count++;
          }
-         else if (!strcmp(&key[0], "xid"))
+         else if (pgmoneta_compare_string(&key[0], "xid"))
          {
             target_count++;
          }
-         else if (!strcmp(&key[0], "timeline"))
+         else if (pgmoneta_compare_string(&key[0], "timeline"))
          {
             /* timeline is a modifier, not a primary target.
              * Save the value for potential backup selection below. */
@@ -690,9 +701,9 @@ pgmoneta_restore(SSL* ssl, int client_fd, int server, uint8_t compression, uint8
 
 error:
 
-   pgmoneta_management_response_error(ssl, client_fd, config->common.servers[server].name,
-                                      ec != -1 ? ec : MANAGEMENT_ERROR_ANNOTATE_ERROR, en != NULL ? en : NAME,
-                                      compression, encryption, payload);
+   pgmoneta_management_response_error_with_nodes(ssl, client_fd, config->common.servers[server].name,
+                                                 ec != -1 ? ec : MANAGEMENT_ERROR_ANNOTATE_ERROR, en != NULL ? en : NAME,
+                                                 compression, encryption, payload, nodes);
 
    pgmoneta_json_destroy(payload);
 
@@ -774,24 +785,24 @@ pgmoneta_restore_backup(struct art* nodes)
             memcpy(&value[0], equal + 1, strlen(equal) - 1);
          }
 
-         if (!strcmp(&key[0], "current") ||
-             !strcmp(&key[0], "immediate") ||
-             !strcmp(&key[0], "name") ||
-             !strcmp(&key[0], "xid") ||
-             !strcmp(&key[0], "lsn") ||
-             !strcmp(&key[0], "time"))
+         if (pgmoneta_compare_string(&key[0], "current") ||
+             pgmoneta_compare_string(&key[0], "immediate") ||
+             pgmoneta_compare_string(&key[0], "name") ||
+             pgmoneta_compare_string(&key[0], "xid") ||
+             pgmoneta_compare_string(&key[0], "lsn") ||
+             pgmoneta_compare_string(&key[0], "time"))
          {
             copy_wal = true;
          }
-         else if (!strcmp(&key[0], "primary"))
+         else if (pgmoneta_compare_string(&key[0], "primary"))
          {
             primary = true;
          }
-         else if (!strcmp(&key[0], "replica"))
+         else if (pgmoneta_compare_string(&key[0], "replica"))
          {
             primary = false;
          }
-         else if (!strcmp(&key[0], "inclusive") || !strcmp(&key[0], "timeline") || !strcmp(&key[0], "action"))
+         else if (pgmoneta_compare_string(&key[0], "inclusive") || pgmoneta_compare_string(&key[0], "timeline") || pgmoneta_compare_string(&key[0], "action"))
          {
             /* Ok */
          }
@@ -832,7 +843,7 @@ pgmoneta_restore_backup(struct art* nodes)
 }
 
 int
-pgmoneta_combine_backups(int server, char* label, char* base, char* input_dir, char* output_dir, struct deque* prior_labels, struct backup* bck, struct json* manifest, bool incremental, bool combine_as_is)
+pgmoneta_combine_backups(int server, char* label, char* base, char* input_dir, char* output_dir, struct deque* prior_labels, struct backup* bck, struct json* manifest, bool incremental, bool combine_as_is, struct art* nodes)
 {
    uint32_t tsoid = 0;
    char relative_tablespace_path[MAX_PATH];
@@ -853,6 +864,20 @@ pgmoneta_combine_backups(int server, char* label, char* base, char* input_dir, c
    if (manifest == NULL || prior_labels == NULL || base == NULL || input_dir == NULL || output_dir == NULL)
    {
       goto error;
+   }
+
+   if (server >= 0 && pgmoneta_is_progress_enabled(server))
+   {
+      /* Round 1 for base data directory files*/
+      int nfiles = pgmoneta_count_files(input_dir);
+      /* Round 2 for each tablespace */
+      for (uint64_t i = 0; i < bck->number_of_tablespaces; i++)
+      {
+         memset(itblspc_dir, 0, MAX_PATH);
+         pgmoneta_snprintf(itblspc_dir, MAX_PATH, "%s/%s/%u", input_dir, "pg_tblspc", parse_oid(bck->tablespaces_oids[i]));
+         nfiles += pgmoneta_count_files(itblspc_dir);
+      }
+      pgmoneta_progress_set_total(server, nfiles);
    }
 
    config = (struct main_configuration*)shmem;
@@ -915,8 +940,9 @@ pgmoneta_combine_backups(int server, char* label, char* base, char* input_dir, c
 
    pgmoneta_workers_wait(workers);
 
-   if (workers != NULL && !workers->outcome)
+   if (workers != NULL && !pgmoneta_workers_outcome_ok(workers))
    {
+      pgmoneta_workers_transfer_failures(workers, nodes);
       goto error;
    }
 
@@ -971,8 +997,9 @@ pgmoneta_combine_backups(int server, char* label, char* base, char* input_dir, c
 
    pgmoneta_workers_wait(workers);
 
-   if (workers != NULL && !workers->outcome)
+   if (workers != NULL && !pgmoneta_workers_outcome_ok(workers))
    {
+      pgmoneta_workers_transfer_failures(workers, nodes);
       goto error;
    }
 
@@ -1117,9 +1144,17 @@ pgmoneta_rollup_backups(int server, char* newest_label, char* oldest_label)
    }
 
    workflow = pgmoneta_workflow_create(WORKFLOW_TYPE_POST_ROLLUP, tmp_backup);
+
+   pgmoneta_progress_setup(server, workflow, nodes, WORKFLOW_TYPE_POST_ROLLUP);
+
    if (carry_out_workflow(workflow, nodes) != RESTORE_OK)
    {
       goto error;
+   }
+
+   if (pgmoneta_is_progress_enabled(server))
+   {
+      pgmoneta_progress_teardown(server);
    }
 
    pgmoneta_workflow_destroy(workflow);
@@ -1132,6 +1167,10 @@ pgmoneta_rollup_backups(int server, char* newest_label, char* oldest_label)
    return 0;
 
 error:
+   if (pgmoneta_is_progress_enabled(server))
+   {
+      pgmoneta_progress_teardown(server);
+   }
    if (pgmoneta_exists(tmp_backup_root))
    {
       pgmoneta_delete_directory(tmp_backup_root);
@@ -1216,7 +1255,7 @@ error:
 }
 
 int
-pgmoneta_copy_postgresql_restore(char* from, char* to, char* base, char* server, char* id, struct backup* backup, struct workers* workers)
+pgmoneta_copy_postgresql_restore(int server, char* from, char* to, char* base, char* id, struct backup* backup, struct workers* workers)
 {
    DIR* d = opendir(from);
    char* from_buffer = NULL;
@@ -1224,6 +1263,7 @@ pgmoneta_copy_postgresql_restore(char* from, char* to, char* base, char* server,
    struct dirent* entry;
    struct stat statbuf;
    char** restore_last_files_names = NULL;
+   bool progress_enabled = (server >= 0 && pgmoneta_is_progress_enabled(server));
 
    if (pgmoneta_get_restore_last_files_names(&restore_last_files_names))
    {
@@ -1250,11 +1290,17 @@ pgmoneta_copy_postgresql_restore(char* from, char* to, char* base, char* server,
 
    pgmoneta_mkdir(to);
 
+   if (progress_enabled)
+   {
+      int n_files = pgmoneta_count_files(from);
+      pgmoneta_progress_set_total(server, n_files);
+   }
+
    if (d)
    {
       while ((entry = readdir(d)))
       {
-         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -1277,13 +1323,13 @@ pgmoneta_copy_postgresql_restore(char* from, char* to, char* base, char* server,
          {
             if (S_ISDIR(statbuf.st_mode))
             {
-               if (!strcmp(entry->d_name, "pg_tblspc"))
+               if (pgmoneta_compare_string(entry->d_name, "pg_tblspc"))
                {
-                  copy_tablespaces_restore(from, to, base, server, id, backup, workers);
+                  copy_tablespaces_restore(server, from, to, base, id, backup, workers);
                }
                else
                {
-                  pgmoneta_copy_directory(from_buffer, to_buffer, restore_last_files_names, workers);
+                  pgmoneta_copy_directory(server, from_buffer, to_buffer, restore_last_files_names, workers);
                }
             }
             else
@@ -1293,16 +1339,24 @@ pgmoneta_copy_postgresql_restore(char* from, char* to, char* base, char* server,
                {
                   for (int i = 0; restore_last_files_names[i] != NULL; i++)
                   {
-                     file_is_excluded = !strcmp(from_buffer, restore_last_files_names[i]);
+                     file_is_excluded = pgmoneta_compare_string(from_buffer, restore_last_files_names[i]);
                   }
                   if (!file_is_excluded)
                   {
                      pgmoneta_copy_file(from_buffer, to_buffer, workers);
+                     if (progress_enabled)
+                     {
+                        pgmoneta_progress_increment(server, 1);
+                     }
                   }
                }
                else
                {
                   pgmoneta_copy_file(from_buffer, to_buffer, workers);
+                  if (progress_enabled)
+                  {
+                     pgmoneta_progress_increment(server, 1);
+                  }
                }
             }
          }
@@ -1364,7 +1418,7 @@ pgmoneta_copy_postgresql_hotstandby(int server, char* from, char* to, char* tbls
    {
       while ((entry = readdir(d)))
       {
-         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -1381,13 +1435,13 @@ pgmoneta_copy_postgresql_hotstandby(int server, char* from, char* to, char* tbls
          {
             if (S_ISDIR(statbuf.st_mode))
             {
-               if (!strcmp(entry->d_name, "pg_tblspc"))
+               if (pgmoneta_compare_string(entry->d_name, "pg_tblspc"))
                {
                   copy_tablespaces_hotstandby(server, from, to, tblspc_mappings, backup, workers);
                }
                else
                {
-                  pgmoneta_copy_directory(from_buffer, to_buffer, NULL, workers);
+                  pgmoneta_copy_directory(-1, from_buffer, to_buffer, NULL, workers);
                }
             }
             else
@@ -1571,7 +1625,7 @@ combine_backups_recursive(uint32_t tsoid,
          if (workers != NULL)
          {
             struct build_backup_file_input* wi = NULL;
-            if (workers->outcome)
+            if (pgmoneta_workers_outcome_ok(workers))
             {
                create_reconstruct_backup_file_input(server,
                                                     label,
@@ -1602,7 +1656,8 @@ combine_backups_recursive(uint32_t tsoid,
                                         prior_labels,
                                         backups,
                                         incremental,
-                                        files))
+                                        files,
+                                        workers != NULL ? workers->outcome : NULL))
             {
                pgmoneta_log_error("unable to reconstruct file %s%s", relative_prefix, entry->d_name + INCREMENTAL_PREFIX_LENGTH);
                goto error;
@@ -1614,7 +1669,7 @@ combine_backups_recursive(uint32_t tsoid,
          if (workers != NULL)
          {
             struct build_backup_file_input* wi = NULL;
-            if (workers->outcome)
+            if (pgmoneta_workers_outcome_ok(workers))
             {
                create_copy_backup_file_input(server, label, ofulldir, relative_prefix, entry->d_name, exclude, workers, &wi);
                pgmoneta_workers_add(workers, do_copy_backup_file, (struct worker_common*)wi);
@@ -1627,7 +1682,7 @@ combine_backups_recursive(uint32_t tsoid,
          }
          else
          {
-            if (copy_backup_file(server, label, ofulldir, relative_prefix, entry->d_name, exclude))
+            if (copy_backup_file(server, label, ofulldir, relative_prefix, entry->d_name, exclude, NULL))
             {
                pgmoneta_log_error("unable to copy file %s%s", relative_prefix, entry->d_name);
                goto error;
@@ -1659,7 +1714,8 @@ reconstruct_backup_file(int server,
                         struct deque* prior_labels,
                         struct art* backups,
                         bool incremental,
-                        struct json* files)
+                        struct json* files,
+                        struct deque* failures)
 {
    struct deque* sources = NULL;             // bookkeeping of each incr/full backup rfile, so that we can free them conveniently
    struct deque_iterator* label_iter = NULL; // the iterator for backup directories
@@ -1683,6 +1739,7 @@ reconstruct_backup_file(int server,
    struct value_config rfile_config = {.destroy_data = rfile_destroy_cb, .to_string = NULL};
    struct json* file = NULL;
    bool full_file_found = false;
+   bool progress_enabled = (server >= 0 && pgmoneta_is_progress_enabled(server));
 
    config = (struct main_configuration*)shmem;
 
@@ -1704,7 +1761,7 @@ reconstruct_backup_file(int server,
    pgmoneta_snprintf(incr_file_name, MAX_PATH, "%s%s", INCREMENTAL_PREFIX, base_file_name);
    // handle the latest file specially, it is the only file that can only be incremental
    bck = (struct backup*)pgmoneta_art_search(backups, label);
-   if (pgmoneta_incremental_rfile_initialize(server, label, relative_dir, incr_file_name, bck->encryption, bck->compression, &latest_source))
+   if (pgmoneta_incremental_rfile_initialize(server, label, relative_dir, incr_file_name, bck->encryption, bck->compression, failures, &latest_source))
    {
       goto error;
    }
@@ -1750,6 +1807,7 @@ reconstruct_backup_file(int server,
    // There could be blocks that cannot be sourced. This is probably because the block gets truncated
    // during the backup process before it gets backed up. In this case just zero fill the block later,
    // the WAL replay will fix the inconsistency since it's getting truncated in the first place.
+
    pgmoneta_deque_iterator_create(prior_labels, &label_iter);
    while (pgmoneta_deque_iterator_next(label_iter))
    {
@@ -1762,10 +1820,12 @@ reconstruct_backup_file(int server,
       // 2. final base name (with compression/encryption suffix, no incremental prefix)
       // 3. base incr name (without compression/encryption suffix, with incremental prefix)
       // 4. final incr name (with compression/encryption suffix, and incremental prefix)
-      if (pgmoneta_rfile_create(server, prior_label, relative_dir, base_file_name, bck->encryption, bck->compression, &rf))
+      if (pgmoneta_rfile_create(server, prior_label, relative_dir, base_file_name, bck->encryption, bck->compression, NULL, &rf))
       {
-         if (pgmoneta_incremental_rfile_initialize(server, prior_label, relative_dir, incr_file_name, bck->encryption, bck->compression, &rf))
+         if (pgmoneta_incremental_rfile_initialize(server, prior_label, relative_dir, incr_file_name, bck->encryption, bck->compression, NULL, &rf))
          {
+            pgmoneta_log_error("reconstruct: unable to find file %s%s in prior backup %s", relative_dir, base_file_name, prior_label);
+            pgmoneta_record_failure(failures, "reconstruct: %s%s missing from prior backup %s", relative_dir, base_file_name, prior_label);
             goto error;
          }
       }
@@ -1877,6 +1937,10 @@ reconstruct_backup_file(int server,
 
    pgmoneta_deque_destroy(sources);
    pgmoneta_deque_iterator_destroy(label_iter);
+   if (progress_enabled)
+   {
+      pgmoneta_progress_increment(server, 1);
+   }
    free(source_map);
    free(offset_map);
    free(base_file_name);
@@ -1896,7 +1960,8 @@ copy_backup_file(int server,
                  char* output_dir,
                  char* relative_dir,
                  char* file_name,
-                 bool exclude)
+                 bool exclude,
+                 struct deque* failures)
 {
    bool excluded = false;
    char ofullpath[MAX_PATH_CONCAT];
@@ -1917,7 +1982,7 @@ copy_backup_file(int server,
    // copy the full file from input dir to output dir
    // extract before copy
    pgmoneta_snprintf(manifest_path, MAX_PATH_CONCAT, "%s%s", relative_dir, file_name);
-   if (pgmoneta_extract_backup_file(server, label, manifest_path, NULL, &extracted_file_path))
+   if (pgmoneta_extract_backup_file(server, label, manifest_path, failures, &extracted_file_path))
    {
       goto error;
    }
@@ -2031,8 +2096,7 @@ write_reconstructed_file_full(char* output_file_path,
    uint8_t buffer[blocksz];
    struct rfile* s = NULL;
 
-   wfp = fopen(output_file_path, "wb+");
-   if (wfp == NULL)
+   if (pgmoneta_fopen_secure(output_file_path, "wb+", &wfp))
    {
       pgmoneta_log_error("reconstruct: unable to open file for reconstruction at %s", output_file_path);
       goto error;
@@ -2136,8 +2200,7 @@ write_reconstructed_file_incremental(char* output_file_path,
       }
    }
 
-   wfp = fopen(output_file_path, "wb+");
-   if (wfp == NULL)
+   if (pgmoneta_fopen_secure(output_file_path, "wb+", &wfp))
    {
       pgmoneta_log_error("reconstruct: unable to open file for reconstruction at %s", output_file_path);
       goto error;
@@ -2203,16 +2266,13 @@ write_backup_label(char* from_dir, char* to_dir, char* lsn_entry, char* tli_entr
    pgmoneta_snprintf(from_path, MAX_PATH, "%s/backup_label", from_dir);
    pgmoneta_snprintf(to_path, MAX_PATH, "%s/backup_label", to_dir);
 
-   from = fopen(from_path, "r");
-   to = fopen(to_path, "w");
-
-   if (from == NULL)
+   if (pgmoneta_fopen_secure(from_path, "r", &from))
    {
       pgmoneta_log_error("Write backup label, could not open %s", from_path);
       goto error;
    }
 
-   if (to == NULL)
+   if (pgmoneta_fopen_secure(to_path, "w", &to))
    {
       pgmoneta_log_error("Write backup label, could not open %s", to_path);
       goto error;
@@ -2420,6 +2480,7 @@ restore_backup_full(struct art* nodes)
       if (pgmoneta_mkdir(target_root))
       {
          pgmoneta_log_error("Unable to create target root directory %s", target_root);
+         ret = RESTORE_ERROR;
          goto error;
       }
    }
@@ -2429,6 +2490,7 @@ restore_backup_full(struct art* nodes)
       if (pgmoneta_mkdir(target_base))
       {
          pgmoneta_log_error("Unable to create target base directory %s", target_base);
+         ret = RESTORE_ERROR;
          goto error;
       }
    }
@@ -2479,9 +2541,17 @@ restore_backup_full(struct art* nodes)
    }
 
    workflow = pgmoneta_workflow_create(WORKFLOW_TYPE_RESTORE, backup);
+
+   pgmoneta_progress_setup(server, workflow, nodes, WORKFLOW_TYPE_RESTORE);
+
    if ((ret = carry_out_workflow(workflow, nodes) != RESTORE_OK))
    {
       goto error;
+   }
+
+   if (pgmoneta_is_progress_enabled(server))
+   {
+      pgmoneta_progress_teardown(server);
    }
 
    free(target_root);
@@ -2492,6 +2562,11 @@ restore_backup_full(struct art* nodes)
    return RESTORE_OK;
 
 error:
+   if (pgmoneta_is_progress_enabled(server))
+   {
+      pgmoneta_progress_teardown(server);
+   }
+
    free(target_root);
    free(target_base);
    free(wal_root);
@@ -2609,15 +2684,22 @@ restore_backup_incremental(struct art* nodes)
    if (!combine_as_is)
    {
       workflow = pgmoneta_workflow_create(WORKFLOW_TYPE_COMBINE, backup);
+      pgmoneta_progress_setup(server, workflow, nodes, WORKFLOW_TYPE_COMBINE);
    }
    else
    {
       workflow = pgmoneta_workflow_create(WORKFLOW_TYPE_COMBINE_AS_IS, backup);
+      pgmoneta_progress_setup(server, workflow, nodes, WORKFLOW_TYPE_COMBINE_AS_IS);
    }
 
    if ((ret = carry_out_workflow(workflow, nodes) != RESTORE_OK))
    {
       goto error;
+   }
+
+   if (pgmoneta_is_progress_enabled(server))
+   {
+      pgmoneta_progress_teardown(server);
    }
 
    // rename the excluded files
@@ -2652,6 +2734,11 @@ restore_backup_incremental(struct art* nodes)
    return RESTORE_OK;
 
 error:
+   if (pgmoneta_is_progress_enabled(server))
+   {
+      pgmoneta_progress_teardown(server);
+   }
+
    pgmoneta_delete_server_workspace(server, (char*)pgmoneta_art_search(nodes, NODE_LABEL));
    cleanup_workspaces(server, labels);
 
@@ -2693,6 +2780,11 @@ carry_out_workflow(struct workflow* workflow, struct art* nodes)
 {
    struct workflow* current = NULL;
    int ret = RESTORE_OK;
+   int server = -1;
+   int phase = -1;
+   char* key = NULL;
+   bool progress_enabled = false;
+
    current = workflow;
    while (current != NULL)
    {
@@ -2705,16 +2797,55 @@ carry_out_workflow(struct workflow* workflow, struct art* nodes)
       current = current->next;
    }
 
+   struct main_configuration* config = (struct main_configuration*)shmem;
+   if (pgmoneta_art_contains_key(nodes, NODE_SERVER_ID))
+   {
+      server = (int)pgmoneta_art_search(nodes, NODE_SERVER_ID);
+      progress_enabled = (server >= 0 && pgmoneta_is_progress_enabled(server));
+   }
+
    current = workflow;
    while (current != NULL)
    {
+      if (progress_enabled)
+      {
+         phase = pgmoneta_progress_phase_from_workflow_name(current->name());
+         if (phase != -1)
+         {
+            key = pgmoneta_progress_limit_node_key(phase);
+            if (key != NULL && pgmoneta_art_contains_key(nodes, key))
+            {
+               pgmoneta_progress_next_phase(server, phase, nodes);
+            }
+         }
+      }
+
       if (current->execute(current->name(), nodes))
       {
          ret = RESTORE_MISSING_LABEL;
          pgmoneta_log_error("execute/%s", current->name());
          goto error;
       }
+
+      if (progress_enabled)
+      {
+         if (phase != -1)
+         {
+            if (key != NULL && pgmoneta_art_contains_key(nodes, key))
+            {
+               int limit = (int)(uintptr_t)pgmoneta_art_search(nodes, key);
+               atomic_store(&config->common.servers[server].progress.percentage, limit);
+               atomic_store(&config->common.servers[server].progress.current_phase, phase);
+            }
+         }
+      }
       current = current->next;
+   }
+
+   if (progress_enabled)
+   {
+      atomic_store(&config->common.servers[server].progress.percentage, 100);
+      atomic_store(&config->common.servers[server].progress.current_phase, PHASE_NONE);
    }
 
    current = workflow;
@@ -2876,6 +3007,9 @@ static void
 do_reconstruct_backup_file(struct worker_common* wc)
 {
    struct build_backup_file_input* input = (struct build_backup_file_input*)wc;
+   struct workers* workers = input->common.workers;
+   struct deque* failures = workers != NULL ? workers->outcome : NULL;
+
    if (reconstruct_backup_file(input->server,
                                input->label,
                                input->output_dir,
@@ -2884,17 +3018,18 @@ do_reconstruct_backup_file(struct worker_common* wc)
                                input->prior_labels,
                                input->backups,
                                input->incremental,
-                               input->files))
+                               input->files,
+                               failures))
    {
       goto error;
    }
-   input->common.workers->outcome = true;
    free(input);
    return;
 
 error:
-   pgmoneta_log_error("Unable to construct file %s/%s", input->label, input->relative_dir, input->file_name);
-   input->common.workers->outcome = false;
+   pgmoneta_log_error("Unable to construct file %s/%s/%s", input->label, input->relative_dir, input->file_name);
+   pgmoneta_record_failure(failures, "Reconstruct failed: %s/%s",
+                           input->relative_dir, input->file_name);
    free(input);
    return;
 }
@@ -2903,12 +3038,16 @@ static void
 do_copy_backup_file(struct worker_common* wc)
 {
    struct build_backup_file_input* input = (struct build_backup_file_input*)wc;
+   struct workers* workers = input->common.workers;
+   struct deque* failures = workers != NULL ? workers->outcome : NULL;
+
    if (copy_backup_file(input->server,
                         input->label,
                         input->output_dir,
                         input->relative_dir,
                         input->file_name,
-                        input->exclude))
+                        input->exclude,
+                        failures))
    {
       goto error;
    }
@@ -2916,8 +3055,9 @@ do_copy_backup_file(struct worker_common* wc)
    return;
 
 error:
-   pgmoneta_log_error("Unable to construct file %s/%s", input->label, input->relative_dir, input->file_name);
-   input->common.workers->outcome = false;
+   pgmoneta_log_error("Unable to construct file %s/%s/%s", input->label, input->relative_dir, input->file_name);
+   pgmoneta_record_failure(failures, "Copy failed: %s/%s",
+                           input->relative_dir, input->file_name);
    free(input);
    return;
 }
@@ -2982,7 +3122,7 @@ file_base_name(char* file, char** basename)
 }
 
 static int
-copy_tablespaces_restore(char* from, char* to, char* base, char* server, char* id, struct backup* backup, struct workers* workers)
+copy_tablespaces_restore(int server, char* from, char* to, char* base, char* id, struct backup* backup, struct workers* workers)
 {
    char* from_tblspc = NULL;
    char* to_tblspc = NULL;
@@ -2990,6 +3130,9 @@ copy_tablespaces_restore(char* from, char* to, char* base, char* server, char* i
    DIR* d = NULL;
    ssize_t size;
    struct dirent* entry;
+   struct main_configuration* config;
+
+   config = (struct main_configuration*)shmem;
 
    from_tblspc = pgmoneta_append(from_tblspc, from);
    if (!pgmoneta_ends_with(from_tblspc, "/"))
@@ -3024,7 +3167,7 @@ copy_tablespaces_restore(char* from, char* to, char* base, char* server, char* i
          char path[MAX_PATH];
          char* tblspc_name = NULL;
 
-         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -3053,7 +3196,7 @@ copy_tablespaces_restore(char* from, char* to, char* base, char* server, char* i
 
          for (uint64_t i = 0; idx == -1 && i < backup->number_of_tablespaces; i++)
          {
-            if (!strcmp(tblspc_name, backup->tablespaces[i]))
+            if (pgmoneta_compare_string(tblspc_name, backup->tablespaces[i]))
             {
                idx = i;
             }
@@ -3072,7 +3215,7 @@ copy_tablespaces_restore(char* from, char* to, char* base, char* server, char* i
 
             to_directory = pgmoneta_append(to_directory, base);
             to_directory = pgmoneta_append(to_directory, "/");
-            to_directory = pgmoneta_append(to_directory, server);
+            to_directory = pgmoneta_append(to_directory, config->common.servers[server].name);
             to_directory = pgmoneta_append(to_directory, "-");
             to_directory = pgmoneta_append(to_directory, id);
             to_directory = pgmoneta_append(to_directory, "-");
@@ -3080,7 +3223,7 @@ copy_tablespaces_restore(char* from, char* to, char* base, char* server, char* i
             to_directory = pgmoneta_append(to_directory, "/");
 
             relative_directory = pgmoneta_append(relative_directory, "../../");
-            relative_directory = pgmoneta_append(relative_directory, server);
+            relative_directory = pgmoneta_append(relative_directory, config->common.servers[server].name);
             relative_directory = pgmoneta_append(relative_directory, "-");
             relative_directory = pgmoneta_append(relative_directory, id);
             relative_directory = pgmoneta_append(relative_directory, "-");
@@ -3091,7 +3234,7 @@ copy_tablespaces_restore(char* from, char* to, char* base, char* server, char* i
             pgmoneta_mkdir(to_directory);
             pgmoneta_symlink_at_file(to_oid, relative_directory);
 
-            pgmoneta_copy_directory(link, to_directory, NULL, workers);
+            pgmoneta_copy_directory(server, link, to_directory, NULL, workers);
 
             free(to_oid);
             free(to_directory);
@@ -3197,7 +3340,7 @@ copy_tablespaces_hotstandby(int server, char* from, char* to, char* tblspc_mappi
                v = strtok(NULL, "->");
                v = pgmoneta_remove_whitespace(v);
 
-               if (!strcmp(k, backup->tablespaces_oids[i]) || !strcmp(k, backup->tablespaces_paths[i]))
+               if (pgmoneta_compare_string(k, backup->tablespaces_oids[i]) || pgmoneta_compare_string(k, backup->tablespaces_paths[i]))
                {
                   dst = pgmoneta_append(dst, v);
                   found = true;
@@ -3244,7 +3387,7 @@ copy_tablespaces_hotstandby(int server, char* from, char* to, char* tblspc_mappi
             }
          }
 
-         pgmoneta_copy_directory(src, dst, NULL, workers);
+         pgmoneta_copy_directory(-1, src, dst, NULL, workers);
 
          free(src);
          free(dst);

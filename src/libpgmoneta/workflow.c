@@ -61,7 +61,6 @@ static struct workflow* wf_delete_backup(void);
 static struct workflow* wf_retention(void);
 static struct workflow* wf_post_rollup(struct backup* backup);
 static struct workflow* wf_list_s3_objects(void);
-static struct workflow* wf_delete_s3_objects(void);
 static struct workflow* wf_restore_s3_objects(void);
 
 static int get_error_code(int type, int flow, struct art* nodes);
@@ -100,9 +99,6 @@ pgmoneta_workflow_create(int workflow_type, struct backup* backup)
          break;
       case WORKFLOW_TYPE_S3_LIST:
          w = wf_list_s3_objects();
-         break;
-      case WORKFLOW_TYPE_S3_DELETE:
-         w = wf_delete_s3_objects();
          break;
       case WORKFLOW_TYPE_S3_RESTORE:
          w = wf_restore_s3_objects();
@@ -337,7 +333,7 @@ pgmoneta_workflow_execute(struct workflow* workflow, struct art* nodes,
    if (pgmoneta_art_contains_key(nodes, NODE_SERVER_ID))
    {
       server = (int)pgmoneta_art_search(nodes, NODE_SERVER_ID);
-      progress_enabled = pgmoneta_is_progress_enabled(server);
+      progress_enabled = (server >= 0 && pgmoneta_is_progress_enabled(server));
    }
 
    current = workflow;
@@ -499,6 +495,26 @@ pgmoneta_phase_name(int phase)
          return PHASE_NAME_COMPRESSION;
       case PHASE_ENCRYPTION:
          return PHASE_NAME_ENCRYPTION;
+      case PHASE_INFO:
+         return PHASE_NAME_INFO;
+      case PHASE_RESTORE:
+         return PHASE_NAME_RESTORE;
+      case PHASE_VERIFY:
+         return PHASE_NAME_VERIFY;
+      case PHASE_DELETE:
+         return PHASE_NAME_DELETE;
+      case PHASE_COPY_WAL:
+         return PHASE_NAME_COPY_WAL;
+      case PHASE_RECOVERY_INFO:
+         return PHASE_NAME_RECOVERY_INFO;
+      case PHASE_EXCLUDED_FILES:
+         return PHASE_NAME_EXCLUDED_FILES;
+      case PHASE_PERMISSIONS:
+         return PHASE_NAME_PERMISSIONS;
+      case PHASE_COMBINE_INCREMENTAL:
+         return PHASE_NAME_COMBINE_INCREMENTAL;
+      case PHASE_CLEANUP:
+         return PHASE_NAME_CLEANUP;
       default:
          return PHASE_NAME_UNKNOWN;
    }
@@ -531,8 +547,6 @@ pgmoneta_workflow_name(int workflow_type)
          return WORKFLOW_NAME_POST_ROLLUP;
       case WORKFLOW_TYPE_S3_LIST:
          return WORKFLOW_NAME_S3_LIST;
-      case WORKFLOW_TYPE_S3_DELETE:
-         return WORKFLOW_NAME_S3_DELETE;
       case WORKFLOW_TYPE_S3_RESTORE:
          return WORKFLOW_NAME_S3_RESTORE;
       default:
@@ -582,25 +596,18 @@ wf_backup(void)
    {
       current->next = pgmoneta_create_sha256();
       current = current->next;
-
-      current->next = pgmoneta_storage_create_ssh(WORKFLOW_TYPE_BACKUP);
-      current = current->next;
-   }
-
-   if (config->storage_engine & STORAGE_ENGINE_S3)
-   {
-      current->next = pgmoneta_storage_create_s3(WORKFLOW_TYPE_BACKUP);
-      current = current->next;
-   }
-
-   if (config->storage_engine & STORAGE_ENGINE_AZURE)
-   {
-      current->next = pgmoneta_storage_create_azure();
-      current = current->next;
    }
 
    current->next = pgmoneta_create_sha512();
    current = current->next;
+
+   if ((config->storage_engine & STORAGE_ENGINE_SSH) ||
+       (config->storage_engine & STORAGE_ENGINE_S3) ||
+       (config->storage_engine & STORAGE_ENGINE_AZURE))
+   {
+      current->next = pgmoneta_storage_create_remote();
+      current = current->next;
+   }
 
 #ifdef DEBUG
    current = head;
@@ -783,25 +790,18 @@ wf_post_rollup(struct backup* backup)
    {
       current->next = pgmoneta_create_sha256();
       current = current->next;
-
-      current->next = pgmoneta_storage_create_ssh(WORKFLOW_TYPE_BACKUP);
-      current = current->next;
-   }
-
-   if (config->storage_engine & STORAGE_ENGINE_S3)
-   {
-      current->next = pgmoneta_storage_create_s3(WORKFLOW_TYPE_BACKUP);
-      current = current->next;
-   }
-
-   if (config->storage_engine & STORAGE_ENGINE_AZURE)
-   {
-      current->next = pgmoneta_storage_create_azure();
-      current = current->next;
    }
 
    current->next = pgmoneta_create_sha512();
    current = current->next;
+
+   if ((config->storage_engine & STORAGE_ENGINE_SSH) ||
+       (config->storage_engine & STORAGE_ENGINE_S3) ||
+       (config->storage_engine & STORAGE_ENGINE_AZURE))
+   {
+      current->next = pgmoneta_storage_create_remote();
+      current = current->next;
+   }
 
 #ifdef DEBUG
    current = head;
@@ -877,25 +877,18 @@ wf_incremental_backup(void)
    {
       current->next = pgmoneta_create_sha256();
       current = current->next;
-
-      current->next = pgmoneta_storage_create_ssh(WORKFLOW_TYPE_BACKUP);
-      current = current->next;
-   }
-
-   if (config->storage_engine & STORAGE_ENGINE_S3)
-   {
-      current->next = pgmoneta_storage_create_s3(WORKFLOW_TYPE_BACKUP);
-      current = current->next;
-   }
-
-   if (config->storage_engine & STORAGE_ENGINE_AZURE)
-   {
-      current->next = pgmoneta_storage_create_azure();
-      current = current->next;
    }
 
    current->next = pgmoneta_create_sha512();
    current = current->next;
+
+   if ((config->storage_engine & STORAGE_ENGINE_SSH) ||
+       (config->storage_engine & STORAGE_ENGINE_S3) ||
+       (config->storage_engine & STORAGE_ENGINE_AZURE))
+   {
+      current->next = pgmoneta_storage_create_remote();
+      current = current->next;
+   }
 
 #ifdef DEBUG
    current = head;
@@ -1118,34 +1111,6 @@ wf_restore_s3_objects(void)
    if (config->storage_engine & STORAGE_ENGINE_S3)
    {
       head = pgmoneta_storage_create_s3(WORKFLOW_TYPE_S3_RESTORE);
-   }
-
-#ifdef DEBUG
-   struct workflow* current = head;
-   while (current != NULL)
-   {
-      assert(current->name != NULL);
-      assert(current->setup != NULL);
-      assert(current->execute != NULL);
-      assert(current->teardown != NULL);
-      current = current->next;
-   }
-#endif
-
-   return head;
-}
-
-static struct workflow*
-wf_delete_s3_objects(void)
-{
-   struct workflow* head = NULL;
-   struct main_configuration* config = NULL;
-
-   config = (struct main_configuration*)shmem;
-
-   if (config->storage_engine & STORAGE_ENGINE_S3)
-   {
-      head = pgmoneta_storage_create_s3(WORKFLOW_TYPE_S3_DELETE);
    }
 
 #ifdef DEBUG

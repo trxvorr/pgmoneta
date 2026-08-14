@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -31,7 +31,6 @@
 #include <aes.h>
 #include <compression.h>
 #include <deque.h>
-#include <extraction.h>
 #include <info.h>
 #include <logging.h>
 #include <manifest.h>
@@ -177,7 +176,7 @@ pgmoneta_extract_username_database(struct message* msg, char** username, char** 
 
    for (int i = 0; i < counter; i++)
    {
-      if (!strcmp(array[i], "user"))
+      if (pgmoneta_compare_string(array[i], "user"))
       {
          size = strlen(array[i + 1]) + 1;
          un = malloc(size);
@@ -186,7 +185,7 @@ pgmoneta_extract_username_database(struct message* msg, char** username, char** 
 
          *username = un;
       }
-      else if (!strcmp(array[i], "database"))
+      else if (pgmoneta_compare_string(array[i], "database"))
       {
          size = strlen(array[i + 1]) + 1;
          db = malloc(size);
@@ -195,7 +194,7 @@ pgmoneta_extract_username_database(struct message* msg, char** username, char** 
 
          *database = db;
       }
-      else if (!strcmp(array[i], "application_name"))
+      else if (pgmoneta_compare_string(array[i], "application_name"))
       {
          size = strlen(array[i + 1]) + 1;
          an = malloc(size);
@@ -679,7 +678,7 @@ pgmoneta_libev(char* engine)
 
    if (engine)
    {
-      if (!strcmp("select", engine))
+      if (pgmoneta_compare_string("select", engine))
       {
          if (engines & EVBACKEND_SELECT)
          {
@@ -690,7 +689,7 @@ pgmoneta_libev(char* engine)
             pgmoneta_log_warn("libev not available: select");
          }
       }
-      else if (!strcmp("poll", engine))
+      else if (pgmoneta_compare_string("poll", engine))
       {
          if (engines & EVBACKEND_POLL)
          {
@@ -701,7 +700,7 @@ pgmoneta_libev(char* engine)
             pgmoneta_log_warn("libev not available: poll");
          }
       }
-      else if (!strcmp("epoll", engine))
+      else if (pgmoneta_compare_string("epoll", engine))
       {
          if (engines & EVBACKEND_EPOLL)
          {
@@ -712,11 +711,11 @@ pgmoneta_libev(char* engine)
             pgmoneta_log_warn("libev not available: epoll");
          }
       }
-      else if (!strcmp("linuxaio", engine))
+      else if (pgmoneta_compare_string("linuxaio", engine))
       {
          return EVFLAG_AUTO;
       }
-      else if (!strcmp("iouring", engine))
+      else if (pgmoneta_compare_string("iouring", engine))
       {
          if (engines & EVBACKEND_IOURING)
          {
@@ -727,7 +726,7 @@ pgmoneta_libev(char* engine)
             pgmoneta_log_warn("libev not available: iouring");
          }
       }
-      else if (!strcmp("devpoll", engine))
+      else if (pgmoneta_compare_string("devpoll", engine))
       {
          if (engines & EVBACKEND_DEVPOLL)
          {
@@ -738,7 +737,7 @@ pgmoneta_libev(char* engine)
             pgmoneta_log_warn("libev not available: devpoll");
          }
       }
-      else if (!strcmp("port", engine))
+      else if (pgmoneta_compare_string("port", engine))
       {
          if (engines & EVBACKEND_PORT)
          {
@@ -749,7 +748,7 @@ pgmoneta_libev(char* engine)
             pgmoneta_log_warn("libev not available: port");
          }
       }
-      else if (!strcmp("auto", engine) || !strcmp("", engine))
+      else if (pgmoneta_compare_string("auto", engine) || pgmoneta_compare_string("", engine))
       {
          return EVFLAG_AUTO;
       }
@@ -800,6 +799,25 @@ pgmoneta_get_home_directory(void)
 #endif
 
    dir = pgmoneta_append(dir, GET_ENV("HOME"));
+
+   return dir;
+}
+
+char*
+pgmoneta_get_tmpdir(void)
+{
+   char* dir = NULL;
+
+#if defined(HAVE_DARWIN) || defined(HAVE_OSX)
+   dir = getenv("TMPDIR");
+#else
+   dir = secure_getenv("TMPDIR");
+#endif
+
+   if (dir == NULL || strlen(dir) == 0 || dir[0] != '/')
+   {
+      dir = "/tmp";
+   }
 
    return dir;
 }
@@ -1756,7 +1774,7 @@ pgmoneta_directory_size(char* directory)
       {
          char path[1024];
 
-         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -1924,7 +1942,7 @@ pgmoneta_get_directories(char* base, int* number_of_directories, char*** dirs)
 
    nod = 0;
 
-   if (base == NULL || !strcmp(base, ""))
+   if (base == NULL || pgmoneta_compare_string(base, ""))
    {
       goto error;
    }
@@ -1938,7 +1956,7 @@ pgmoneta_get_directories(char* base, int* number_of_directories, char*** dirs)
    {
       if (entry->d_type == DT_DIR)
       {
-         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -1960,7 +1978,7 @@ pgmoneta_get_directories(char* base, int* number_of_directories, char*** dirs)
       {
          if (entry->d_type == DT_DIR)
          {
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
             {
                continue;
             }
@@ -2029,7 +2047,7 @@ pgmoneta_delete_directory(char* path)
       r = 0;
       while (!r && (entry = readdir(d)))
       {
-         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -2083,8 +2101,7 @@ pgmoneta_append_file_chunk(const char* tmp_path, const void* data, size_t data_s
    if (pgmoneta_mkdir(parent_dir))
       goto error;
    // create the file with append if exists
-   f = fopen(tmp_path, "a+");
-   if (f == NULL)
+   if (pgmoneta_fopen_secure(tmp_path, "a+", &f))
    {
       goto error;
    }
@@ -2139,7 +2156,7 @@ pgmoneta_get_files(uint32_t file_type_mask, char* base, bool recursive, struct d
 
    while ((entry = readdir(dir)) != NULL)
    {
-      if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+      if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
       {
          continue;
       }
@@ -2367,7 +2384,7 @@ error:
       closedir(dir);
    }
 
-   pgmoneta_deque_destroy(*files);
+   pgmoneta_deque_destroy(array);
    *files = NULL;
 
    return 1;
@@ -2385,7 +2402,7 @@ pgmoneta_delete_file(char* file, struct workers* workers)
 
    if (workers != NULL)
    {
-      if (workers->outcome)
+      if (pgmoneta_workers_outcome_ok(workers))
       {
          pgmoneta_workers_add(workers, do_delete_file, (struct worker_common*)fi);
       }
@@ -2418,13 +2435,14 @@ do_delete_file(struct worker_common* wc)
 }
 
 int
-pgmoneta_copy_directory(char* from, char* to, char** restore_last_files_names, struct workers* workers)
+pgmoneta_copy_directory(int server, char* from, char* to, char** restore_last_files_names, struct workers* workers)
 {
    DIR* d = opendir(from);
    char* from_buffer;
    char* to_buffer;
    struct dirent* entry;
    struct stat statbuf;
+   bool progress_enabled = (server >= 0 && pgmoneta_is_progress_enabled(server));
 
    pgmoneta_mkdir(to);
 
@@ -2432,7 +2450,7 @@ pgmoneta_copy_directory(char* from, char* to, char** restore_last_files_names, s
    {
       while ((entry = readdir(d)))
       {
-         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -2452,7 +2470,7 @@ pgmoneta_copy_directory(char* from, char* to, char** restore_last_files_names, s
          {
             if (S_ISDIR(statbuf.st_mode))
             {
-               pgmoneta_copy_directory(from_buffer, to_buffer, restore_last_files_names, workers);
+               pgmoneta_copy_directory(server, from_buffer, to_buffer, restore_last_files_names, workers);
             }
             else
             {
@@ -2461,16 +2479,24 @@ pgmoneta_copy_directory(char* from, char* to, char** restore_last_files_names, s
                {
                   for (int i = 0; restore_last_files_names[i] != NULL; i++)
                   {
-                     file_is_excluded = !strcmp(from_buffer, restore_last_files_names[i]);
+                     file_is_excluded = pgmoneta_compare_string(from_buffer, restore_last_files_names[i]);
                   }
                   if (!file_is_excluded)
                   {
                      pgmoneta_copy_file(from_buffer, to_buffer, workers);
+                     if (progress_enabled)
+                     {
+                        pgmoneta_progress_increment(server, 1);
+                     }
                   }
                }
                else
                {
                   pgmoneta_copy_file(from_buffer, to_buffer, workers);
+                  if (progress_enabled)
+                  {
+                     pgmoneta_progress_increment(server, 1);
+                  }
                }
             }
          }
@@ -2504,7 +2530,7 @@ pgmoneta_list_directory(char* directory)
    {
       while ((entry = readdir(d)))
       {
-         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -2566,7 +2592,7 @@ pgmoneta_copy_file(char* from, char* to, struct workers* workers)
 
    if (workers != NULL)
    {
-      if (workers->outcome)
+      if (pgmoneta_workers_outcome_ok(workers))
       {
          pgmoneta_workers_add(workers, do_copy_file, (struct worker_common*)fi);
       }
@@ -2814,11 +2840,6 @@ do_copy_file(struct worker_common* wc)
    pgmoneta_log_trace("FILETRACKER | Copy | %s | %s |", fi->from, fi->to);
 #endif
 
-   if (fi->common.workers != NULL)
-   {
-      fi->common.workers->outcome = true;
-   }
-
    free(dn);
    free(from);
    free(to);
@@ -2851,10 +2872,7 @@ error:
 
    errno = 0;
 
-   if (fi->common.workers != NULL)
-   {
-      fi->common.workers->outcome = false;
-   }
+   pgmoneta_record_failure(fi->common.workers != NULL ? fi->common.workers->outcome : NULL, "File copy failed: %s", fi->from);
 
    free(dn);
    free(from);
@@ -2884,6 +2902,142 @@ pgmoneta_move_file(char* from, char* to)
    }
 
    return ret;
+}
+
+int
+pgmoneta_fopen_secure(const char* path, const char* mode, FILE** file)
+{
+   int fd = -1;
+   int flags = 0;
+   int saved_errno = 0;
+   bool create = false;
+   bool read = false;
+   bool write = false;
+   bool append = false;
+   bool plus = false;
+   bool exclusive = false;
+   char fdmode[8];
+   size_t j = 0;
+   const char* p = mode;
+
+   if (file == NULL)
+   {
+      return 2;
+   }
+
+   *file = NULL;
+
+   if (path == NULL || mode == NULL)
+   {
+      return 2;
+   }
+
+   if (strchr(mode, 'r'))
+   {
+      read = true;
+   }
+   if (strchr(mode, 'w'))
+   {
+      write = true;
+      create = true;
+   }
+   if (strchr(mode, 'a'))
+   {
+      append = true;
+      create = true;
+   }
+   if (strchr(mode, '+'))
+   {
+      plus = true;
+   }
+   if (strchr(mode, 'x'))
+   {
+      exclusive = true;
+   }
+
+   if (plus)
+   {
+      flags |= O_RDWR;
+   }
+   else if (read)
+   {
+      flags |= O_RDONLY;
+   }
+   else
+   {
+      flags |= O_WRONLY;
+   }
+
+   if (create)
+   {
+      flags |= O_CREAT;
+      if (write)
+      {
+         flags |= O_TRUNC;
+      }
+      if (exclusive)
+      {
+         flags |= O_EXCL;
+      }
+   }
+
+   if (append)
+   {
+      flags |= O_APPEND;
+   }
+
+   if (create || write || append)
+   {
+      flags |= O_NOFOLLOW;
+   }
+   flags |= O_CLOEXEC;
+
+   if (create)
+   {
+      fd = open(path, flags, S_IRUSR | S_IWUSR);
+   }
+   else
+   {
+      fd = open(path, flags);
+   }
+
+   if (fd == -1)
+   {
+      return errno == EEXIST ? 1 : 2;
+   }
+
+   if (create)
+   {
+      if (fchmod(fd, S_IRUSR | S_IWUSR))
+      {
+         saved_errno = errno;
+         close(fd);
+         errno = saved_errno;
+         return 2;
+      }
+   }
+
+   /* fdopen() only accepts the access part of the mode, 'x' is already O_EXCL */
+   while (*p != '\0' && j < sizeof(fdmode) - 1)
+   {
+      if (*p == 'r' || *p == 'w' || *p == 'a' || *p == 'b' || *p == '+')
+      {
+         fdmode[j++] = *p;
+      }
+      p++;
+   }
+   fdmode[j] = '\0';
+
+   *file = fdopen(fd, fdmode);
+   if (*file == NULL)
+   {
+      saved_errno = errno;
+      close(fd);
+      errno = saved_errno;
+      return 2;
+   }
+
+   return 0;
 }
 
 int
@@ -2967,7 +3121,7 @@ pgmoneta_is_directory(char* directory)
 
    memset(&statbuf, 0, sizeof(struct stat));
 
-   if (!lstat(directory, &statbuf))
+   if (!stat(directory, &statbuf))
    {
       if (S_ISDIR(statbuf.st_mode))
       {
@@ -3289,17 +3443,24 @@ error:
 }
 
 int
-pgmoneta_copy_wal_files(char* from, char* to, char* start, struct workers* workers)
+pgmoneta_copy_wal_files(int server, char* from, char* to, char* start, struct workers* workers)
 {
    struct deque* wal_files = NULL;
    struct deque_iterator* it = NULL;
    char* basename = NULL;
    char* ff = NULL;
    char* tf = NULL;
+   bool progress_enabled = (server >= 0 && pgmoneta_is_progress_enabled(server));
 
    if (pgmoneta_get_wal_files(from, &wal_files))
    {
       goto error;
+   }
+
+   if (progress_enabled && wal_files != NULL)
+   {
+      int total_files = pgmoneta_deque_size(wal_files);
+      pgmoneta_progress_set_total(server, total_files);
    }
 
    pgmoneta_deque_iterator_create(wal_files, &it);
@@ -3371,6 +3532,11 @@ pgmoneta_copy_wal_files(char* from, char* to, char* start, struct workers* worke
       free(basename);
       free(ff);
       free(tf);
+
+      if (progress_enabled)
+      {
+         pgmoneta_progress_increment(server, 1);
+      }
 
       basename = NULL;
       ff = NULL;
@@ -3511,7 +3677,7 @@ pgmoneta_biggest_file(char* directory)
       {
          char path[MAX_PATH];
 
-         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -3613,7 +3779,7 @@ pgmoneta_ends_with(char* str, char* suffix)
       str_len = strlen(str);
       suffix_len = strlen(suffix);
 
-      return (str_len >= suffix_len) && (strcmp(str + (str_len - suffix_len), suffix) == 0);
+      return (str_len >= suffix_len) && (pgmoneta_compare_string(str + (str_len - suffix_len), suffix));
    }
 
    return false;
@@ -4088,7 +4254,7 @@ pgmoneta_get_server_workspace(int server)
    }
    else
    {
-      ws = pgmoneta_append(ws, "/tmp/pgmoneta-workspace/");
+      ws = pgmoneta_format_and_append(ws, "%s/pgmoneta-workspace-%d/", pgmoneta_get_tmpdir(), getuid());
    }
 
    if (!pgmoneta_exists(ws))
@@ -4229,7 +4395,7 @@ pgmoneta_permission_recursive(char* d)
    {
       while ((entry = readdir(dir)))
       {
-         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -4415,13 +4581,14 @@ get_server_basepath(int server)
 int
 pgmoneta_get_timestamp_ISO8601_format(char* short_date, char* long_date)
 {
+   struct tm tm_buffer;
    time_t now = time(&now);
    if (now == -1)
    {
       return 1;
    }
 
-   struct tm* ptm = gmtime(&now);
+   struct tm* ptm = gmtime_r(&now, &tm_buffer);
    if (ptm == NULL)
    {
       return 1;
@@ -4443,13 +4610,14 @@ pgmoneta_get_timestamp_ISO8601_format(char* short_date, char* long_date)
 int
 pgmoneta_get_timestamp_UTC_format(char* utc_date)
 {
+   struct tm tm_buffer;
    time_t now = time(&now);
    if (now == -1)
    {
       return 1;
    }
 
-   struct tm* ptm = gmtime(&now);
+   struct tm* ptm = gmtime_r(&now, &tm_buffer);
    if (ptm == NULL)
    {
       return 1;
@@ -5211,7 +5379,7 @@ calculate_offset(uint64_t addr, uint64_t* offset, char** filepath)
 
    while (fgets(line, sizeof(line), fp) != NULL)
    {
-      // exmaple line:
+      // example line:
       // 7fb60d1ea000-7fb60d20c000 r--p 00000000 103:02 120327460 /usr/lib/libc.so.6
       start = strtok(line, "-");
       end = strtok(NULL, " ");
@@ -5371,7 +5539,7 @@ pgmoneta_backtrace_string(char** s)
          }
 
          buffer[strlen(buffer) - 1] = '\0'; // Remove trailing newline
-         if (strcmp(buffer, "main") == 0)
+         if (pgmoneta_compare_string(buffer, "main"))
          {
             found_main = true;
          }

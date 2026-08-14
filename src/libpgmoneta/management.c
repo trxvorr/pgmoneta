@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -35,6 +35,7 @@
 #include <lz4_compression.h>
 #include <management.h>
 #include <utils.h>
+#include <workflow.h>
 #include <zstandard_compression.h>
 
 /* system */
@@ -145,41 +146,6 @@ pgmoneta_management_request_list_s3_objects(SSL* ssl, int socket, char* server, 
    {
       pgmoneta_json_put(request, MANAGEMENT_ARGUMENT_S3_PREFIX, (uintptr_t)prefix, ValueString);
    }
-
-   if (pgmoneta_management_write_json(ssl, socket, compression, encryption, j))
-   {
-      goto error;
-   }
-
-   pgmoneta_json_destroy(j);
-
-   return 0;
-
-error:
-
-   pgmoneta_json_destroy(j);
-
-   return 1;
-}
-
-int
-pgmoneta_management_request_delete_s3_objects(SSL* ssl, int socket, char* server, char* prefix, uint8_t compression, uint8_t encryption, int32_t output_format)
-{
-   struct json* j = NULL;
-   struct json* request = NULL;
-
-   if (pgmoneta_management_create_header(MANAGEMENT_S3_DELETE, compression, encryption, output_format, &j))
-   {
-      goto error;
-   }
-
-   if (pgmoneta_management_create_request(j, &request))
-   {
-      goto error;
-   }
-
-   pgmoneta_json_put(request, MANAGEMENT_ARGUMENT_SERVER, (uintptr_t)server, ValueString);
-   pgmoneta_json_put(request, MANAGEMENT_ARGUMENT_S3_PREFIX, (uintptr_t)prefix, ValueString);
 
    if (pgmoneta_management_write_json(ssl, socket, compression, encryption, j))
    {
@@ -1083,9 +1049,9 @@ error:
    return 1;
 }
 
-int
-pgmoneta_management_response_error(SSL* ssl, int socket, char* server, int32_t error, char* workflow,
-                                   uint8_t compression, uint8_t encryption, struct json* payload)
+static int
+management_response_error_impl(SSL* ssl, int socket, char* server, int32_t error, char* workflow,
+                               uint8_t compression, uint8_t encryption, struct json* payload, struct art* nodes)
 {
    int srv = -1;
    bool own_payload = false;
@@ -1111,11 +1077,34 @@ pgmoneta_management_response_error(SSL* ssl, int socket, char* server, int32_t e
       goto error;
    }
 
+   if (nodes != NULL && outcome != NULL)
+   {
+      struct deque* worker_errors = (struct deque*)pgmoneta_art_search(nodes, NODE_WORKER_ERRORS);
+      if (worker_errors != NULL && !pgmoneta_deque_empty(worker_errors))
+      {
+         struct json* errors_array = NULL;
+         struct deque_iterator* ei = NULL;
+
+         if (!pgmoneta_json_create(&errors_array) &&
+             !pgmoneta_deque_iterator_create(worker_errors, &ei))
+         {
+            while (pgmoneta_deque_iterator_next(ei))
+            {
+               pgmoneta_json_append(errors_array,
+                                    (uintptr_t)(char*)pgmoneta_value_data(ei->value),
+                                    ValueString);
+            }
+            pgmoneta_deque_iterator_destroy(ei);
+            pgmoneta_json_put(outcome, MANAGEMENT_ARGUMENT_WORKER_ERRORS, (uintptr_t)errors_array, ValueJSON);
+         }
+      }
+   }
+
    if (server != NULL && strlen(server) > 0)
    {
       for (int i = 0; i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(server, config->common.servers[i].name))
+         if (pgmoneta_compare_string(server, config->common.servers[i].name))
          {
             srv = i;
          }
@@ -1160,6 +1149,21 @@ error:
    }
 
    return 1;
+}
+
+int
+pgmoneta_management_response_error(SSL* ssl, int socket, char* server, int32_t error, char* workflow,
+                                   uint8_t compression, uint8_t encryption, struct json* payload)
+{
+   return management_response_error_impl(ssl, socket, server, error, workflow, compression, encryption, payload, NULL);
+}
+
+int
+pgmoneta_management_response_error_with_nodes(SSL* ssl, int socket, char* server, int32_t error, char* workflow,
+                                              uint8_t compression, uint8_t encryption, struct json* payload,
+                                              struct art* nodes)
+{
+   return management_response_error_impl(ssl, socket, server, error, workflow, compression, encryption, payload, nodes);
 }
 
 int

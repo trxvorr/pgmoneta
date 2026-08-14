@@ -59,12 +59,21 @@ typedef oid rel_file_number;
 typedef int64_t timestamp_tz;
 
 /* #define variables */
-#define MAXIMUM_ALIGNOF           8 // TODO: double check this value
-#define ALIGNOF_SHORT             2 // TODO: double check this value
-#define InvalidXLogRecPtr         0
-#define InvalidBlockNumber        ((uint32_t)0xFFFFFFFF)
-#define InvalidBuffer             0
-#define XLOG_PAGE_MAGIC           0xD10D // WAL version indicator
+#define MAXIMUM_ALIGNOF    8 // TODO: double check this value
+#define ALIGNOF_SHORT      2 // TODO: double check this value
+#define InvalidXLogRecPtr  0
+#define InvalidBlockNumber ((uint32_t)0xFFFFFFFF)
+#define InvalidBuffer      0
+#define XLOG_PAGE_MAGIC    WAL_MAGIC_V14 /**< WAL version indicator */
+
+/* WAL Magic Numbers */
+#define WAL_MAGIC_V13             0xD106 /**< PostgreSQL 13 WAL magic number */
+#define WAL_MAGIC_V14             0xD10D /**< PostgreSQL 14 WAL magic number */
+#define WAL_MAGIC_V15             0xD110 /**< PostgreSQL 15 WAL magic number */
+#define WAL_MAGIC_V16             0xD113 /**< PostgreSQL 16 WAL magic number */
+#define WAL_MAGIC_V17             0xD116 /**< PostgreSQL 17 WAL magic number */
+#define WAL_MAGIC_V18             0xD118 /**< PostgreSQL 18 WAL magic number */
+#define WAL_MAGIC_V19             0xD121 /**< PostgreSQL 19 WAL magic number */
 #define InvalidOid                ((oid)0)
 #define FLEXIBLE_ARRAY_MEMBER     /* empty */
 #define INVALID_REP_ORIGIN_ID     0
@@ -103,14 +112,11 @@ typedef int64_t timestamp_tz;
 /* This flag indicates a "long" page header */
 #define XLP_LONG_HEADER 0x0002
 
-/* This flag indicates backup blocks starting in this page are optional */
-#define XLP_BKP_REMOVABLE 0x0004
-
 /* Replaces a missing contrecord; see CreateOverwriteContrecordRecord */
-#define XLP_FIRST_IS_OVERWRITE_CONTRECORD 0x0008
+#define XLP_FIRST_IS_OVERWRITE_CONTRECORD 0x0004
 
 /* All defined flag bits in xlp_info (used for validity checking of header) */
-#define XLP_ALL_FLAGS 0x000F
+#define XLP_ALL_FLAGS 0x0007
 
 #define XLogRecHasBlockRef(record, block_id) \
    ((record->max_block_id >= (block_id)) &&  \
@@ -340,6 +346,8 @@ struct decoded_xlog_record
    struct xlog_record header;                             /**< Header of the record. */
    rep_origin_id record_origin;                           /**< Origin ID of the record. */
    transaction_id toplevel_xid;                           /**< Top-level transaction ID. */
+   timestamp_tz xact_timestamp;                           /**< Commit or abort timestamp, when available. */
+   bool has_xact_timestamp;                               /**< Indicates if xact_timestamp is available. */
    char* main_data;                                       /**< Main data portion of the record. */
    uint32_t main_data_len;                                /**< Length of the main data portion. */
    uint32_t block_size;                                   /**< Block size. */
@@ -387,10 +395,56 @@ struct column_widths
    int rec_width; /**< Width of the record type column. */
    int tot_width; /**< Width of the total length column. */
    int xid_width; /**< Width of the transaction ID column. */
+   int ts_width;  /**< Width of the timestamp column. */
+};
+
+/**
+ * @struct xid_timestamp_entry
+ * @brief Represents a single XID to timestamp mapping entry.
+ *
+ * This structure maps a transaction ID to its commit timestamp.
+ *
+ * Fields:
+ * - xid: The transaction ID.
+ * - timestamp: The commit/abort timestamp for the transaction.
+ */
+struct xid_timestamp_entry
+{
+   transaction_id xid;     /**< The transaction ID. */
+   timestamp_tz timestamp; /**< The commit/abort timestamp. */
+};
+
+/**
+ * @struct xid_timestamp_map
+ * @brief A mapping from transaction IDs to their timestamps.
+ *
+ * This structure maintains a collection of XID -> timestamp mappings,
+ * allowing efficient lookup of transaction commit times.
+ *
+ * This subsystem requires PostgreSQL track_commit_timestamp to be enabled.
+ * If track_commit_timestamp is disabled, WAL transaction timestamp handling is
+ * unsupported and startup will fail.
+ *
+ * Fields:
+ * - entries: Deque of XID timestamp entries.
+ * - sorted: Whether deque entries are sorted and ready for sequential lookup.
+ */
+struct xid_timestamp_map
+{
+   struct deque* entries; /**< Deque of XID timestamp entries. */
+   bool sorted;           /**< Whether deque entries are sorted and ready for sequential lookup. */
 };
 
 /* External variables */
 extern struct server* server_config;
+
+/**
+ * Track the WAL magic value currently being displayed/decoded.
+ * This is used for version-gated decode/format logic in RMGR descriptions,
+ * especially for intra-major WAL format bumps like PostgreSQL 19.
+ */
+void pgmoneta_wal_set_current_magic(uint16_t magic_value);
+uint16_t pgmoneta_wal_get_current_magic(void);
 
 /* Function definitions */
 
@@ -498,11 +552,13 @@ pgmoneta_wal_array_desc(char* buf, void* array, size_t elem_size, int count);
  * @param limit The limit
  * @param included_objects Objects that will include wal records that reference them
  * @param widths The column widths for consistent formatting
+ * @param xid_ts_map The XID to timestamp mapping for looking up timestamps
  */
 void
 pgmoneta_wal_record_display(struct decoded_xlog_record* record, uint16_t magic_value, enum value_type type, FILE* out,
                             bool quiet, bool color, struct deque* rms, uint64_t start_lsn, uint64_t end_lsn,
-                            struct deque* xids, uint32_t limit, char** included_objects, struct column_widths* widths);
+                            struct deque* xids, uint32_t limit, char** included_objects, struct column_widths* widths,
+                            struct xid_timestamp_map* xid_ts_map);
 
 /**
  * Display the ocuurance of resource manager in WAL records
@@ -576,6 +632,68 @@ void
 pgmoneta_calculate_column_widths(struct walfile* wf, uint64_t start_lsn, uint64_t end_lsn,
                                  struct deque* rms, struct deque* xids, char** included_objects,
                                  struct column_widths* widths);
+
+/**
+ * Create a new deque-backed XID timestamp map
+ *
+ * @param initial_capacity Initial capacity hint for the map
+ * @param map Output parameter for the created map
+ * @return 0 on success, 1 on error
+ */
+int
+pgmoneta_xid_timestamp_map_create(struct xid_timestamp_map** map);
+
+/**
+ * Destroy an XID timestamp map
+ *
+ * @param map The map to destroy
+ */
+void
+pgmoneta_xid_timestamp_map_destroy(struct xid_timestamp_map* map);
+
+/**
+ * Add or update an XID -> timestamp mapping
+ *
+ * @param map The XID timestamp map
+ * @param xid The transaction ID
+ * @param timestamp The commit/abort timestamp
+ * @return 0 on success, 1 on error
+ */
+int
+pgmoneta_xid_timestamp_map_put(struct xid_timestamp_map* map, transaction_id xid, timestamp_tz timestamp);
+
+/**
+ * Get the timestamp for a given XID
+ *
+ * @param map The XID timestamp map
+ * @param xid The transaction ID to look up
+ * @param timestamp Output parameter for the timestamp
+ * @return 0 if found, 1 if not found
+ */
+int
+pgmoneta_xid_timestamp_map_get(struct xid_timestamp_map* map, transaction_id xid, timestamp_tz* timestamp);
+
+/**
+ * Get the size of the XID timestamp map
+ *
+ * @param map The XID timestamp map
+ * @return The number of entries in the map
+ */
+size_t
+pgmoneta_xid_timestamp_map_size(struct xid_timestamp_map* map);
+
+/**
+ * Process a WAL record and extract XID -> timestamp mapping
+ *
+ * This function examines a decoded WAL record and extracts transaction
+ * commit/abort timestamps, adding them to the XID timestamp map.
+ *
+ * @param record The decoded WAL record to process
+ * @param map The XID timestamp map to populate
+ * @return 0 on success, 1 on error
+ */
+int
+pgmoneta_process_xid_timestamp(struct decoded_xlog_record* record, struct xid_timestamp_map* map);
 
 #ifdef __cplusplus
 }

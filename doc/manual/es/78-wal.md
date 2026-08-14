@@ -21,6 +21,7 @@ _Campos:_
 - **long_phd**: Un pointer a la extended header (long header) encontrada en la primera página del archivo WAL. Este header contiene metadatos adicionales.
 - **page_headers**: Un deque de headers representando cada página en el archivo WAL, excluyendo la primera página.
 - **records**: Un deque de WAL records decodificados. Cada record representa un cambio a la base de datos y contiene metadatos y los datos actuales a ser aplicados durante recovery o replicación.
+- **xid_ts_map**: Un mapeo de IDs de transacción a sus timestamps de commit/abort. Esto permite mostrar timestamps para todos los records, no solo para los records de transacción.
 
 **Descripción de funciones**
 
@@ -110,6 +111,159 @@ if (result == 0) {
 }
 pgmoneta_destroy_walfile(wf);
 ```
+
+### Mapeo de timestamps XID
+
+El WAL reader mantiene un mapeo de IDs de transacción (XIDs) a sus timestamps de commit/abort. Esto permite mostrar timestamps para todos los records WAL, no solo para los records de commit/abort de transacciones.
+
+**`struct xid_timestamp_map`**
+
+```c
+struct xid_timestamp_map
+{
+   struct deque* entries; /**< Deque of XID timestamp entries. */
+   bool sorted;          /**< Whether deque entries are sorted and ready for sequential lookup. */
+};
+
+struct xid_timestamp_entry
+{
+   transaction_id xid;        /**< The transaction ID. */
+   timestamp_tz timestamp;    /**< The commit/abort timestamp. */
+};
+```
+
+_Campos:_
+
+- **entries**: Deque que almacena mapeos XID → timestamp.
+- **sorted**: Indica si las entradas del deque han sido ordenadas por XID para una búsqueda secuencial eficiente.
+
+> NOTA: Este subsistema requiere que PostgreSQL tenga habilitado `track_commit_timestamp`. Si está deshabilitado, el procesamiento de timestamps de transacciones WAL no está soportado y pgmoneta fallará al iniciar.
+
+**Funciones del mapa de timestamps XID**
+
+**`pgmoneta_xid_timestamp_map_create`**
+
+```c
+int pgmoneta_xid_timestamp_map_create(struct xid_timestamp_map** map);
+```
+
+_Descripción:_
+
+Crea un nuevo mapa de timestamps XID usando un contenedor respaldado por deque. El mapa elimina la gestión manual de capacidad y crece dinámicamente según sea necesario.
+
+_Parámetros:_
+
+- **initial_capacity**: Sugerencia de tamaño inicial para el mapa (preservada por compatibilidad de API).
+- **map**: Parámetro de salida para el mapa creado.
+
+_Retorna:_
+
+- Retorna `0` en caso de éxito o `1` en caso de fallo.
+
+**`pgmoneta_xid_timestamp_map_destroy`**
+
+```c
+void pgmoneta_xid_timestamp_map_destroy(struct xid_timestamp_map* map);
+```
+
+_Descripción:_
+
+Libera toda la memoria asociada con un mapa de timestamps XID, incluyendo sus entradas respaldadas por deque.
+
+**`pgmoneta_xid_timestamp_map_put`**
+
+```c
+int pgmoneta_xid_timestamp_map_put(struct xid_timestamp_map* map, transaction_id xid, timestamp_tz timestamp);
+```
+
+_Descripción:_
+
+Agrega un mapeo XID → timestamp al mapa respaldado por deque. Las entradas insertadas se mantienen sin ordenar hasta el momento de búsqueda y se ordenan antes de buscar para preservar el orden correcto.
+
+_Parámetros:_
+
+- **map**: El mapa de timestamps XID.
+- **xid**: El ID de transacción.
+- **timestamp**: El timestamp de commit/abort.
+
+_Retorna:_
+
+- Retorna `0` en caso de éxito o `1` en caso de fallo.
+
+**`pgmoneta_xid_timestamp_map_get`**
+
+```c
+int pgmoneta_xid_timestamp_map_get(struct xid_timestamp_map* map, transaction_id xid, timestamp_tz* timestamp);
+```
+
+_Descripción:_
+
+Recupera el timestamp para un XID dado desde el deque ordenado. Como el deque se ordena por XID antes de la búsqueda, la búsqueda termina anticipadamente cuando se supera el objetivo.
+
+_Parámetros:_
+
+- **map**: El mapa de timestamps XID.
+- **xid**: El ID de transacción a buscar.
+- **timestamp**: Parámetro de salida para el timestamp.
+
+_Retorna:_
+
+- Retorna `0` si se encuentra el XID, o `1` si no se encuentra.
+
+**`pgmoneta_process_xid_timestamp`**
+
+```c
+int pgmoneta_process_xid_timestamp(struct decoded_xlog_record* record, struct xid_timestamp_map* map);
+```
+
+_Descripción:_
+
+Procesa un record WAL y extrae su mapeo XID → timestamp. Esta función se llama durante el parseo del archivo WAL para construir el mapa completo de timestamps para todas las transacciones del archivo.
+
+_Parámetros:_
+
+- **record**: El record WAL decodificado a procesar.
+- **map**: El mapa de timestamps XID a poblar.
+
+_Retorna:_
+
+- Retorna `0` en caso de éxito o `1` en caso de error.
+
+**Características de rendimiento:**
+
+- **Inserción**: O(n) debido al ordenamiento del deque antes de la búsqueda
+- **Búsqueda**: O(n) en el peor caso con terminación anticipada después del ordenamiento
+- **Memoria**: O(n), donde n es el número de transacciones únicas
+
+**Ejemplo de uso:**
+
+```c
+struct xid_timestamp_map* ts_map = NULL;
+pgmoneta_xid_timestamp_map_create(100, &ts_map);
+
+// During WAL parsing
+for each WAL record:
+    if (record->has_xact_timestamp)
+    {
+        pgmoneta_xid_timestamp_map_put(ts_map, record->header.xl_xid, record->xact_timestamp);
+    }
+
+// During display
+for each WAL record:
+    timestamp_tz ts;
+    if (record->has_xact_timestamp)
+    {
+        timestamp_str = pgmoneta_wal_timestamptz_to_str(record->xact_timestamp);
+    }
+    else if (pgmoneta_xid_timestamp_map_get(ts_map, record->header.xl_xid, &ts) == 0)
+    {
+        timestamp_str = pgmoneta_wal_timestamptz_to_str(ts);
+    }
+
+pgmoneta_xid_timestamp_map_destroy(ts_map);
+```
+
+### Funciones de descripción WAL
 
 **`pgmoneta_describe_walfile`**
 

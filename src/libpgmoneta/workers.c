@@ -32,6 +32,7 @@
 #include <deque.h>
 #include <logging.h>
 #include <workers.h>
+#include <workflow.h>
 #include <value.h>
 #include <aes.h>
 
@@ -42,8 +43,6 @@
 #ifdef HAVE_LINUX
 #include <sys/sysinfo.h>
 #endif
-
-static volatile int worker_keepalive;
 
 static int worker_init(struct workers* workers, struct worker** worker);
 static void* worker_do(struct worker* worker);
@@ -62,8 +61,6 @@ pgmoneta_workers_initialize(int num, struct workers** workers)
 
    *workers = NULL;
 
-   worker_keepalive = 1;
-
    if (num < 1)
    {
       goto error;
@@ -78,7 +75,14 @@ pgmoneta_workers_initialize(int num, struct workers** workers)
 
    w->number_of_alive = 0;
    w->number_of_working = 0;
-   w->outcome = true;
+   w->keepalive = 1;
+   w->outcome = NULL;
+
+   if (pgmoneta_deque_create(true, &w->outcome))
+   {
+      pgmoneta_log_error("Could not allocate memory for workers outcome deque");
+      goto error;
+   }
 
    if (pgmoneta_deque_create(true, &w->queue))
    {
@@ -127,12 +131,122 @@ error:
 
    if (w != NULL)
    {
+      if (w->outcome != NULL)
+      {
+         pgmoneta_deque_destroy(w->outcome);
+      }
       pgmoneta_deque_destroy(w->queue);
       free(w->has_tasks);
       free(w);
    }
 
    return 1;
+}
+
+bool
+pgmoneta_workers_outcome_ok(struct workers* workers)
+{
+   if (workers == NULL || workers->outcome == NULL)
+   {
+      return true;
+   }
+   return pgmoneta_deque_empty(workers->outcome);
+}
+
+void
+pgmoneta_record_failure(struct deque* failures, char* fmt, ...)
+{
+   char* msg = NULL;
+   va_list ap;
+   int size_needed;
+
+   if (failures == NULL || fmt == NULL)
+   {
+      return;
+   }
+
+   va_start(ap, fmt);
+   size_needed = vsnprintf(NULL, 0, fmt, ap) + 1;
+   va_end(ap);
+
+   msg = malloc(size_needed);
+   if (msg == NULL)
+   {
+      return;
+   }
+
+   va_start(ap, fmt);
+   vsnprintf(msg, size_needed, fmt, ap);
+   va_end(ap);
+
+   pgmoneta_deque_add(failures, NULL, (uintptr_t)msg, ValueString);
+   free(msg);
+}
+
+void
+pgmoneta_workers_log_failures(struct workers* workers)
+{
+   struct deque_iterator* iter = NULL;
+
+   if (workers == NULL || workers->outcome == NULL)
+   {
+      return;
+   }
+
+   if (pgmoneta_deque_iterator_create(workers->outcome, &iter))
+   {
+      return;
+   }
+
+   while (pgmoneta_deque_iterator_next(iter))
+   {
+      pgmoneta_log_error("Worker failure: %s", (char*)pgmoneta_value_data(iter->value));
+   }
+
+   pgmoneta_deque_iterator_destroy(iter);
+}
+
+void
+pgmoneta_workers_transfer_failures(struct workers* workers, struct art* nodes)
+{
+   struct deque* existing = NULL;
+   struct deque_iterator* iter = NULL;
+
+   pgmoneta_workers_log_failures(workers);
+
+   if (workers == NULL || workers->outcome == NULL || nodes == NULL)
+   {
+      return;
+   }
+
+   existing = (struct deque*)pgmoneta_art_search(nodes, NODE_WORKER_ERRORS);
+
+   if (existing != NULL)
+   {
+      if (!pgmoneta_deque_iterator_create(workers->outcome, &iter))
+      {
+         while (pgmoneta_deque_iterator_next(iter))
+         {
+            char* msg = (char*)pgmoneta_value_data(iter->value);
+            char* copy = pgmoneta_append(NULL, msg);
+
+            if (copy != NULL)
+            {
+               pgmoneta_deque_add(existing, NULL, (uintptr_t)copy, ValueString);
+            }
+         }
+         pgmoneta_deque_iterator_destroy(iter);
+      }
+      pgmoneta_deque_destroy(workers->outcome);
+      workers->outcome = NULL;
+      return;
+   }
+
+   if (pgmoneta_art_insert(nodes, NODE_WORKER_ERRORS, (uintptr_t)workers->outcome, ValueDeque))
+   {
+      return;
+   }
+   workers->outcome = NULL;
 }
 
 int
@@ -196,7 +310,7 @@ pgmoneta_workers_destroy(struct workers* workers)
    if (workers != NULL)
    {
       worker_total = workers->number_of_alive;
-      worker_keepalive = 0;
+      workers->keepalive = 0;
 
       time(&start);
       while (tpassed < timeout && workers->number_of_alive)
@@ -213,6 +327,7 @@ pgmoneta_workers_destroy(struct workers* workers)
       }
 
       pgmoneta_deque_destroy(workers->queue);
+      pgmoneta_deque_destroy(workers->outcome);
       free(workers->has_tasks);
 
       for (int n = 0; n < worker_total; n++)
@@ -353,11 +468,11 @@ worker_do(struct worker* worker)
    workers->number_of_alive += 1;
    pthread_mutex_unlock(&workers->worker_lock);
 
-   while (worker_keepalive)
+   while (workers->keepalive)
    {
       semaphore_wait(workers->has_tasks);
 
-      if (worker_keepalive)
+      if (workers->keepalive)
       {
          pthread_mutex_lock(&workers->worker_lock);
          workers->number_of_working++;

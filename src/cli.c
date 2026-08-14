@@ -32,7 +32,7 @@
 #include <cmd.h>
 #include <compression.h>
 #include <configuration.h>
-#include <extraction.h>
+#include <files.h>
 #include <info.h>
 #include <json.h>
 #include <logging.h>
@@ -121,7 +121,6 @@ static void display_helper(char* command);
 static int backup(SSL* ssl, int socket, char* server, uint8_t compression, uint8_t encryption, char* incremental, int32_t output_format);
 static int list_backup(SSL* ssl, int socket, char* server, char* sort_order, uint8_t compression, uint8_t encryption, int32_t output_format);
 static int list_s3_objects(SSL* ssl, int socket, char* server, char* prefix, uint8_t compression, uint8_t encryption, int32_t output_format);
-static int delete_s3_objects(SSL* ssl, int socket, char* server, char* prefix, uint8_t compression, uint8_t encryption, int32_t output_format);
 static int restore_s3_objects(SSL* ssl, int socket, char* server, char* prefix, char* position, char* directory, uint8_t compression, uint8_t encryption, int32_t output_format);
 static int restore(SSL* ssl, int socket, char* server, char* backup_id, char* position, char* directory, uint8_t compression, uint8_t encryption, int32_t output_format);
 static int verify(SSL* ssl, int socket, char* server, char* backup_id, char* directory, char* files, uint8_t compression, uint8_t encryption, int32_t output_format);
@@ -238,7 +237,6 @@ usage(void)
    printf("  shutdown                 Shutdown pgmoneta\n");
    printf("  s3 <action>              Manage s3 data, with:\n");
    printf("                           - 'ls' to list remote objects\n");
-   printf("                           - 'delete' to delete remote objects under a prefix\n");
    printf("  status [details]         Status of pgmoneta, with optional details\n");
    printf("  verify                   Verify a backup from a server\n");
    printf("\n");
@@ -269,12 +267,6 @@ struct pgmoneta_command command_table[] = {
     .action = MANAGEMENT_S3_LS,
     .deprecated = false,
     .log_message = "<s3 ls>"},
-   {.command = "s3",
-    .subcommand = "delete",
-    .accepted_argument_count = {2},
-    .action = MANAGEMENT_S3_DELETE,
-    .deprecated = false,
-    .log_message = "<s3 delete>"},
    {.command = "s3",
     .subcommand = "restore",
     .accepted_argument_count = {3, 4},
@@ -502,39 +494,39 @@ main(int argc, char** argv)
       {
          break;
       }
-      else if (!strcmp(optname, "c") || !strcmp(optname, "config"))
+      else if (pgmoneta_compare_string(optname, "c") || pgmoneta_compare_string(optname, "config"))
       {
          configuration_path = optarg;
       }
-      else if (!strcmp(optname, "h") || !strcmp(optname, "host"))
+      else if (pgmoneta_compare_string(optname, "h") || pgmoneta_compare_string(optname, "host"))
       {
          host = optarg;
       }
-      else if (!strcmp(optname, "p") || !strcmp(optname, "port"))
+      else if (pgmoneta_compare_string(optname, "p") || pgmoneta_compare_string(optname, "port"))
       {
          port = optarg;
       }
-      else if (!strcmp(optname, "U") || !strcmp(optname, "user"))
+      else if (pgmoneta_compare_string(optname, "U") || pgmoneta_compare_string(optname, "user"))
       {
          username = optarg;
       }
-      else if (!strcmp(optname, "P") || !strcmp(optname, "password"))
+      else if (pgmoneta_compare_string(optname, "P") || pgmoneta_compare_string(optname, "password"))
       {
          password = optarg;
       }
-      else if (!strcmp(optname, "L") || !strcmp(optname, "logfile"))
+      else if (pgmoneta_compare_string(optname, "L") || pgmoneta_compare_string(optname, "logfile"))
       {
          logfile = optarg;
       }
-      else if (!strcmp(optname, "v") || !strcmp(optname, "verbose"))
+      else if (pgmoneta_compare_string(optname, "v") || pgmoneta_compare_string(optname, "verbose"))
       {
          verbose = true;
       }
-      else if (!strcmp(optname, "V") || !strcmp(optname, "version"))
+      else if (pgmoneta_compare_string(optname, "V") || pgmoneta_compare_string(optname, "version"))
       {
          version();
       }
-      else if (!strcmp(optname, "F") || !strcmp(optname, "format"))
+      else if (pgmoneta_compare_string(optname, "F") || pgmoneta_compare_string(optname, "format"))
       {
          if (!strncmp(optarg, "json", MISC_LENGTH))
          {
@@ -554,7 +546,7 @@ main(int argc, char** argv)
             exit(1);
          }
       }
-      else if (!strcmp(optname, "C") || !strcmp(optname, "compress"))
+      else if (pgmoneta_compare_string(optname, "C") || pgmoneta_compare_string(optname, "compress"))
       {
          if (!strncmp(optarg, "gz", MISC_LENGTH))
          {
@@ -582,7 +574,7 @@ main(int argc, char** argv)
             exit(1);
          }
       }
-      else if (!strcmp(optname, "E") || !strcmp(optname, "encrypt"))
+      else if (pgmoneta_compare_string(optname, "E") || pgmoneta_compare_string(optname, "encrypt"))
       {
          if (!strncmp(optarg, "aes", MISC_LENGTH))
          {
@@ -610,7 +602,7 @@ main(int argc, char** argv)
             exit(1);
          }
       }
-      else if (!strcmp(optname, "s") || !strcmp(optname, "sort"))
+      else if (pgmoneta_compare_string(optname, "s") || pgmoneta_compare_string(optname, "sort"))
       {
          if (!strncmp(optarg, "asc", 3) || !strncmp(optarg, "desc", 4))
          {
@@ -622,15 +614,15 @@ main(int argc, char** argv)
             exit(1);
          }
       }
-      else if (!strcmp(optname, "cascade"))
+      else if (pgmoneta_compare_string(optname, "cascade"))
       {
          cascade = true;
       }
-      else if (!strcmp(optname, "force"))
+      else if (pgmoneta_compare_string(optname, "force"))
       {
          force = true;
       }
-      else if (!strcmp(optname, "?") || !strcmp(optname, "help"))
+      else if (pgmoneta_compare_string(optname, "?") || pgmoneta_compare_string(optname, "help"))
       {
          usage();
          exit(0);
@@ -887,11 +879,10 @@ password:
          goto password;
       }
 
-      // Check character length
-      size_t char_count = pgmoneta_utf8_char_length((unsigned char*)password, strlen(password));
-      if (char_count == (size_t)-1 || char_count > MAX_PASSWORD_CHARS)
+      // Enforce the password byte-length limit
+      if (strlen(password) >= MAX_PASSWORD_LENGTH)
       {
-         printf("pgmoneta-cli: Invalid password: too many characters (max %d)\n", MAX_PASSWORD_CHARS);
+         printf("pgmoneta-cli: Invalid password: too long (max %d bytes)\n", MAX_PASSWORD_LENGTH - 1);
          goto password;
       }
 
@@ -931,10 +922,6 @@ execute:
    else if (parsed.cmd->action == MANAGEMENT_S3_LS)
    {
       exit_code = list_s3_objects(s_ssl, socket, parsed.args[0], parsed.args[1], compression, encryption, output_format);
-   }
-   else if (parsed.cmd->action == MANAGEMENT_S3_DELETE)
-   {
-      exit_code = delete_s3_objects(s_ssl, socket, parsed.args[0], parsed.args[1], compression, encryption, output_format);
    }
    else if (parsed.cmd->action == MANAGEMENT_S3_RESTORE)
    {
@@ -1154,7 +1141,6 @@ help_s3(void)
 {
    printf("Manage the s3\n");
    printf("  pgmoneta-cli s3 ls <server>\n");
-   printf("  pgmoneta-cli s3 delete <server> <prefix>\n");
    printf("  pgmoneta-cli s3 restore <server> <prefix> [[current|name=X|xid=X|lsn=X|time=X|inclusive=X|timeline=X|action=X|primary|replica],*] <directory>\n");
 }
 
@@ -1297,91 +1283,91 @@ help_progress(void)
 static void
 display_helper(char* command)
 {
-   if (!strcmp(command, COMMAND_BACKUP))
+   if (pgmoneta_compare_string(command, COMMAND_BACKUP))
    {
       help_backup();
    }
-   else if (!strcmp(command, COMMAND_LIST_BACKUP))
+   else if (pgmoneta_compare_string(command, COMMAND_LIST_BACKUP))
    {
       help_list_backup();
    }
-   else if (!strcmp(command, COMMAND_S3))
+   else if (pgmoneta_compare_string(command, COMMAND_S3))
    {
       help_s3();
    }
-   else if (!strcmp(command, COMMAND_RESTORE))
+   else if (pgmoneta_compare_string(command, COMMAND_RESTORE))
    {
       help_restore();
    }
-   else if (!strcmp(command, COMMAND_VERIFY))
+   else if (pgmoneta_compare_string(command, COMMAND_VERIFY))
    {
       help_verify();
    }
-   else if (!strcmp(command, COMMAND_ARCHIVE))
+   else if (pgmoneta_compare_string(command, COMMAND_ARCHIVE))
    {
       help_archive();
    }
-   else if (!strcmp(command, COMMAND_DELETE))
+   else if (pgmoneta_compare_string(command, COMMAND_DELETE))
    {
       help_delete();
    }
-   else if (!strcmp(command, COMMAND_RETAIN))
+   else if (pgmoneta_compare_string(command, COMMAND_RETAIN))
    {
       help_retain();
    }
-   else if (!strcmp(command, COMMAND_EXPUNGE))
+   else if (pgmoneta_compare_string(command, COMMAND_EXPUNGE))
    {
       help_expunge();
    }
-   else if (!strcmp(command, COMMAND_DECRYPT))
+   else if (pgmoneta_compare_string(command, COMMAND_DECRYPT))
    {
       help_decrypt();
    }
-   else if (!strcmp(command, COMMAND_ENCRYPT))
+   else if (pgmoneta_compare_string(command, COMMAND_ENCRYPT))
    {
       help_encrypt();
    }
-   else if (!strcmp(command, COMMAND_DECOMPRESS))
+   else if (pgmoneta_compare_string(command, COMMAND_DECOMPRESS))
    {
       help_decompress();
    }
-   else if (!strcmp(command, COMMAND_COMPRESS))
+   else if (pgmoneta_compare_string(command, COMMAND_COMPRESS))
    {
       help_compress();
    }
-   else if (!strcmp(command, COMMAND_PING))
+   else if (pgmoneta_compare_string(command, COMMAND_PING))
    {
       help_ping();
    }
-   else if (!strcmp(command, COMMAND_SHUTDOWN))
+   else if (pgmoneta_compare_string(command, COMMAND_SHUTDOWN))
    {
       help_shutdown();
    }
-   else if (!strcmp(command, COMMAND_STATUS))
+   else if (pgmoneta_compare_string(command, COMMAND_STATUS))
    {
       help_status_details();
    }
-   else if (!strcmp(command, COMMAND_CONF))
+   else if (pgmoneta_compare_string(command, COMMAND_CONF))
    {
       help_conf();
    }
-   else if (!strcmp(command, COMMAND_CLEAR))
+   else if (pgmoneta_compare_string(command, COMMAND_CLEAR))
    {
       help_clear();
    }
-   else if (!strcmp(command, COMMAND_INFO))
+   else if (pgmoneta_compare_string(command, COMMAND_INFO))
    {
       help_info();
    }
-   else if (!strcmp(command, COMMAND_ANNOTATE))
+   else if (pgmoneta_compare_string(command, COMMAND_ANNOTATE))
    {
       help_annotate();
    }
-   else if (!strcmp(command, COMMAND_MODE))
+   else if (pgmoneta_compare_string(command, COMMAND_MODE))
    {
       help_mode();
    }
-   else if (!strcmp(command, COMMAND_PROGRESS))
+   else if (pgmoneta_compare_string(command, COMMAND_PROGRESS))
    {
       help_progress();
    }
@@ -1446,24 +1432,6 @@ error:
    return 1;
 }
 
-static int
-delete_s3_objects(SSL* ssl, int socket, char* server, char* prefix, uint8_t compression, uint8_t encryption, int32_t output_format)
-{
-   if (pgmoneta_management_request_delete_s3_objects(ssl, socket, server, prefix, compression, encryption, output_format))
-   {
-      goto error;
-   }
-
-   if (process_result(ssl, socket, output_format))
-   {
-      goto error;
-   }
-
-   return 0;
-
-error:
-   return 1;
-}
 static int
 restore_s3_objects(SSL* ssl, int socket, char* server, char* prefix, char* position, char* directory, uint8_t compression, uint8_t encryption, int32_t output_format)
 {
@@ -2266,7 +2234,7 @@ process_set_result(SSL* ssl, int socket, char* config_key, int32_t output_format
    }
 
    // Handle success cases with accurate messaging
-   if (conf_status && !strcmp(conf_status, CONFIGURATION_STATUS_SUCCESS))
+   if (conf_status && pgmoneta_compare_string(conf_status, CONFIGURATION_STATUS_SUCCESS))
    {
       printf("Configuration change applied successfully\n");
       printf("   Parameter: %s\n", config_key ? config_key : "unknown");
@@ -2274,7 +2242,7 @@ process_set_result(SSL* ssl, int socket, char* config_key, int32_t output_format
       printf("   New value: %s\n", new_value ? new_value : "unknown");
       printf("   Status: Active (applied to running instance)\n");
    }
-   else if (conf_status && !strcmp(conf_status, CONFIGURATION_STATUS_RESTART_REQUIRED))
+   else if (conf_status && pgmoneta_compare_string(conf_status, CONFIGURATION_STATUS_RESTART_REQUIRED))
    {
       printf("Configuration change requires manual restart\n");
       printf("   Parameter: %s\n", config_key ? config_key : "unknown");
@@ -2458,14 +2426,14 @@ get_config_key_result(char* config_key, struct json* j, uintptr_t* r, int32_t ou
       if (strlen(context) > 0)
       {
          // Looking for a specific context (like "mydb" in "limit.mydb.username")
-         if (!strcmp(context, iter->key) && iter->value->type == ValueJSON)
+         if (pgmoneta_compare_string(context, iter->key) && iter->value->type == ValueJSON)
          {
             struct json* nested_obj = (struct json*)iter->value->data;
             struct json_iterator* nested_iter;
             pgmoneta_json_iterator_create(nested_obj, &nested_iter);
             while (pgmoneta_json_iterator_next(nested_iter))
             {
-               if (!strcmp(key, nested_iter->key))
+               if (pgmoneta_compare_string(key, nested_iter->key))
                {
                   config_value = pgmoneta_value_to_string(nested_iter->value, FORMAT_TEXT, NULL, 0);
                   if (output_format == MANAGEMENT_OUTPUT_FORMAT_JSON)
@@ -2479,7 +2447,7 @@ get_config_key_result(char* config_key, struct json* j, uintptr_t* r, int32_t ou
             break;
          }
       }
-      else if (!strcmp(key, iter->key))
+      else if (pgmoneta_compare_string(key, iter->key))
       {
          // Handle single or two-part keys
          if (iter->value->type == ValueJSON)
@@ -2620,11 +2588,6 @@ translate_command(int32_t cmd_code)
          command_output = pgmoneta_append(command_output, COMMAND_S3);
          command_output = pgmoneta_append_char(command_output, ' ');
          command_output = pgmoneta_append(command_output, "ls");
-         break;
-      case MANAGEMENT_S3_DELETE:
-         command_output = pgmoneta_append(command_output, COMMAND_S3);
-         command_output = pgmoneta_append_char(command_output, ' ');
-         command_output = pgmoneta_append(command_output, "delete");
          break;
       case MANAGEMENT_S3_RESTORE:
          command_output = pgmoneta_append(command_output, COMMAND_S3);
@@ -3369,7 +3332,6 @@ translate_json_object(struct json* j)
                pgmoneta_json_iterator_destroy(server_it);
                break;
             case MANAGEMENT_S3_RESTORE:
-            case MANAGEMENT_S3_DELETE:
                break;
             case MANAGEMENT_STATUS_DETAILS:
                translate_response_argument(response);

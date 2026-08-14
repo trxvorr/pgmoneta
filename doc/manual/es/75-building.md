@@ -50,21 +50,22 @@ La documentación de [**pgmoneta**][pgmoneta] requiere
 
 ```sh
 dnf install pandoc texlive-scheme-basic \
-            'tex(footnote.sty)' 'tex(footnotebackref.sty)' \
+            'tex(fvextra.sty)' 'tex(footnote.sty)' 'tex(footnotebackref.sty)' \
             'tex(pagecolor.sty)' 'tex(hardwrap.sty)' \
-            'tex(mdframed.sty)' 'tex(sourcesanspro.sty)' \
+            'tex(mdframed.sty)' 'tex(sourcesans.sty)' \
             'tex(ly1enc.def)' 'tex(sourcecodepro.sty)' \
             'tex(titling.sty)' 'tex(csquotes.sty)' \
-            'tex(zref-abspage.sty)' 'tex(needspace.sty)'
+            'tex(zref-abspage.sty)' 'tex(needspace.sty)' \
+            texlive-babel-spanish
 ```
 
 También necesitarás la plantilla `Eisvogel` que puedes instalar a través de
 
 ```sh
-wget https://github.com/Wandmalfarbe/pandoc-latex-template/releases/download/v3.4.0/Eisvogel-3.4.0.tar.gz
-tar -xzf Eisvogel-3.4.0.tar.gz
+wget https://github.com/Wandmalfarbe/pandoc-latex-template/releases/download/v3.5.0/Eisvogel-3.5.0.tar.gz
+tar -xzf Eisvogel-3.5.0.tar.gz
 mkdir -p ~/.local/share/pandoc/templates
-mv Eisvogel-3.4.0/eisvogel.latex ~/.local/share/pandoc/templates/
+mv Eisvogel-3.5.0/eisvogel.latex ~/.local/share/pandoc/templates/
 ```
 
 donde `$HOME` es tu directorio de inicio.
@@ -228,4 +229,3 @@ Los desarrolladores pueden querer experimentar con flags de sanitizer adicionale
 * `-fno-common` - Evita que las variables se fusionen en bloques comunes, ayudando a identificar problemas de acceso a variables
 
 Tenga en cuenta que algunos sanitizers son incompatibles entre sí. Por ejemplo, no puedes usar ASan y MSan juntos.
-

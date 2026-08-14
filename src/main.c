@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -45,6 +45,7 @@
 #include <memory.h>
 #include <message.h>
 #include <network.h>
+#include <nagios.h>
 #include <prometheus.h>
 #include <remote.h>
 #include <restore.h>
@@ -90,6 +91,7 @@
 
 static void accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
 static void accept_metrics_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
+static void accept_nagios_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
 static void accept_console_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
 static void accept_management_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
 static void shutdown_cb(struct ev_loop* loop, ev_signal* w, int revents);
@@ -130,6 +132,9 @@ static int unix_management_socket = -1;
 static struct accept_io io_metrics[MAX_FDS];
 static int* metrics_fds = NULL;
 static int metrics_fds_length = -1;
+static struct accept_io io_nagios[MAX_FDS];
+static int* nagios_fds = NULL;
+static int nagios_fds_length = -1;
 static struct accept_io io_console[MAX_FDS];
 static int* console_fds = NULL;
 static int console_fds_length = -1;
@@ -190,6 +195,29 @@ shutdown_metrics(void)
    }
 }
 
+static void
+start_nagios(void)
+{
+   for (int i = 0; i < nagios_fds_length; i++)
+   {
+      int sockfd = *(nagios_fds + i);
+      memset(&io_nagios[i], 0, sizeof(struct accept_io));
+      ev_io_init((struct ev_io*)&io_nagios[i], accept_nagios_cb, sockfd, EV_READ);
+      io_nagios[i].socket = sockfd;
+      io_nagios[i].argv = argv_ptr;
+      ev_io_start(main_loop, (struct ev_io*)&io_nagios[i]);
+   }
+}
+static void
+shutdown_nagios(void)
+{
+   for (int i = 0; i < nagios_fds_length; i++)
+   {
+      ev_io_stop(main_loop, (struct ev_io*)&io_nagios[i]);
+      pgmoneta_disconnect(io_nagios[i].socket);
+      errno = 0;
+   }
+}
 static void
 start_console(void)
 {
@@ -340,31 +368,31 @@ main(int argc, char** argv)
       {
          break;
       }
-      else if (!strcmp(optname, "c") || !strcmp(optname, "config"))
+      else if (pgmoneta_compare_string(optname, "c") || pgmoneta_compare_string(optname, "config"))
       {
          configuration_path = optarg;
       }
-      else if (!strcmp(optname, "u") || !strcmp(optname, "users"))
+      else if (pgmoneta_compare_string(optname, "u") || pgmoneta_compare_string(optname, "users"))
       {
          users_path = optarg;
       }
-      else if (!strcmp(optname, "A") || !strcmp(optname, "admins"))
+      else if (pgmoneta_compare_string(optname, "A") || pgmoneta_compare_string(optname, "admins"))
       {
          admins_path = optarg;
       }
-      else if (!strcmp(optname, "d") || !strcmp(optname, "daemon"))
+      else if (pgmoneta_compare_string(optname, "d") || pgmoneta_compare_string(optname, "daemon"))
       {
          daemon = true;
       }
-      else if (!strcmp(optname, "D") || !strcmp(optname, "directory"))
+      else if (pgmoneta_compare_string(optname, "D") || pgmoneta_compare_string(optname, "directory"))
       {
          directory_path = optarg;
       }
-      else if (!strcmp(optname, "V") || !strcmp(optname, "version"))
+      else if (pgmoneta_compare_string(optname, "V") || pgmoneta_compare_string(optname, "version"))
       {
          version();
       }
-      else if (!strcmp(optname, "?") || !strcmp(optname, "help"))
+      else if (pgmoneta_compare_string(optname, "?") || pgmoneta_compare_string(optname, "help"))
       {
          usage();
          exit(0);
@@ -405,7 +433,7 @@ main(int argc, char** argv)
 
    if (directory_path != NULL)
    {
-      if (!strcmp(directory_path, "/etc/pgmoneta"))
+      if (pgmoneta_compare_string(directory_path, "/etc/pgmoneta"))
       {
          pgmoneta_log_warn("Using the default configuration directory %s, -D can be omitted.", directory_path);
       }
@@ -969,6 +997,7 @@ main(int argc, char** argv)
 
    shutdown_management(true);
    shutdown_metrics();
+   shutdown_nagios();
    shutdown_console(true);
    shutdown_mgt(true);
 
@@ -980,6 +1009,7 @@ main(int argc, char** argv)
    ev_loop_destroy(main_loop);
 
    free(metrics_fds);
+   free(nagios_fds);
    free(console_fds);
    free(management_fds);
 
@@ -1012,6 +1042,7 @@ error:
    if (metrics_started)
    {
       shutdown_metrics();
+      shutdown_nagios();
    }
 
    if (console_started)
@@ -1025,6 +1056,7 @@ error:
    }
 
    free(metrics_fds);
+   free(nagios_fds);
    free(console_fds);
    free(management_fds);
 
@@ -1134,7 +1166,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1186,7 +1218,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1227,7 +1259,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1261,50 +1293,6 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          goto error;
       }
    }
-   else if (id == MANAGEMENT_S3_DELETE)
-   {
-      char* prefix = NULL;
-
-      server = (char*)pgmoneta_json_get(request, MANAGEMENT_ARGUMENT_SERVER);
-      prefix = (char*)pgmoneta_json_get(request, MANAGEMENT_ARGUMENT_S3_PREFIX);
-
-      srv = -1;
-      for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
-      {
-         if (!strcmp(config->common.servers[i].name, server))
-         {
-            srv = i;
-         }
-      }
-
-      if (srv != -1)
-      {
-         pid = fork();
-         if (pid == -1)
-         {
-            pgmoneta_management_response_error(NULL, client_fd, server, MANAGEMENT_ERROR_DELETE_S3_NOFORK, NAME, compression, encryption, payload);
-            pgmoneta_log_error("S3 delete: No fork %s (%d)", server, MANAGEMENT_ERROR_DELETE_S3_NOFORK);
-            goto error;
-         }
-         else if (pid == 0)
-         {
-            struct json* pyl = NULL;
-
-            shutdown_ports(false);
-
-            pgmoneta_json_clone(payload, &pyl);
-
-            pgmoneta_set_proc_title(1, ai->argv, "s3 delete", config->common.servers[srv].name);
-            pgmoneta_delete_s3_objects(client_fd, srv, prefix, compression, encryption, pyl);
-         }
-      }
-      else
-      {
-         pgmoneta_management_response_error(NULL, client_fd, server, MANAGEMENT_ERROR_DELETE_S3_NOSERVER, NAME, compression, encryption, payload);
-         pgmoneta_log_error("S3 delete: No server %s (%d)", server, MANAGEMENT_ERROR_DELETE_S3_NOSERVER);
-         goto error;
-      }
-   }
    else if (id == MANAGEMENT_S3_RESTORE)
    {
       char* prefix = NULL;
@@ -1315,7 +1303,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1357,7 +1345,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1399,7 +1387,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1440,7 +1428,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1481,7 +1469,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1718,7 +1706,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1759,7 +1747,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1926,7 +1914,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -1967,7 +1955,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -2020,7 +2008,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       srv = -1;
       for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
       {
-         if (!strcmp(config->common.servers[i].name, server))
+         if (pgmoneta_compare_string(config->common.servers[i].name, server))
          {
             srv = i;
          }
@@ -2028,7 +2016,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
 
       if (srv != -1)
       {
-         if (!strcmp(action, "offline"))
+         if (pgmoneta_compare_string(action, "offline"))
          {
             pgmoneta_server_set_online(srv, false);
 
@@ -2056,7 +2044,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
                goto error;
             }
          }
-         else if (!strcmp(action, "online"))
+         else if (pgmoneta_compare_string(action, "online"))
          {
             pgmoneta_server_set_online(srv, true);
 
@@ -2197,6 +2185,7 @@ accept_metrics_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          pgmoneta_log_warn("Restarting listening port due to: %s (%d)", strerror(errno), watcher->fd);
 
          shutdown_metrics();
+         shutdown_nagios();
 
          free(metrics_fds);
          metrics_fds = NULL;
@@ -2264,6 +2253,65 @@ child_error:
    pgmoneta_disconnect(client_fd);
 }
 
+static void
+accept_nagios_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
+{
+   struct sockaddr_in6 client_addr;
+   socklen_t client_addr_length;
+   int client_fd;
+   struct main_configuration* config;
+
+   if (EV_ERROR & revents)
+   {
+      pgmoneta_log_debug("accept_nagios_cb: invalid event: %s", strerror(errno));
+      errno = 0;
+      return;
+   }
+
+   config = (struct main_configuration*)shmem;
+
+   memset(&client_addr, 0, sizeof(client_addr));
+   client_addr_length = sizeof(client_addr);
+   client_fd = accept(watcher->fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   if (client_fd == -1)
+   {
+      if (accept_fatal(errno) && keep_running)
+      {
+         pgmoneta_log_warn("Restarting Nagios listening port due to: %s (%d)", strerror(errno), watcher->fd);
+         shutdown_nagios();
+         free(nagios_fds);
+         nagios_fds = NULL;
+         nagios_fds_length = 0;
+         if (pgmoneta_bind(config->host, config->nagios, &nagios_fds, &nagios_fds_length))
+         {
+            pgmoneta_log_fatal("Could not bind to %s:%d", config->host, config->nagios);
+            exit(1);
+         }
+         if (nagios_fds_length > MAX_FDS)
+         {
+            pgmoneta_log_fatal("Too many descriptors %d", nagios_fds_length);
+            exit(1);
+         }
+         start_nagios();
+      }
+      else
+      {
+         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fd);
+      }
+      errno = 0;
+      return;
+   }
+
+   if (!fork())
+   {
+      ev_loop_fork(loop);
+      shutdown_ports(false);
+      pgmoneta_nagios(NULL, client_fd);
+      exit(0);
+   }
+
+   pgmoneta_disconnect(client_fd);
+}
 static void
 accept_console_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
 {
@@ -2474,6 +2522,7 @@ reload_services_only(void)
    config = (struct main_configuration*)shmem;
 
    shutdown_metrics();
+   shutdown_nagios();
 
    free(metrics_fds);
    metrics_fds = NULL;
@@ -2662,7 +2711,7 @@ valid_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __attribut
 
             for (int j = 0; usr == -1 && j < config->common.number_of_users; j++)
             {
-               if (!strcmp(config->common.servers[i].username, config->common.users[j].username))
+               if (pgmoneta_compare_string(config->common.servers[i].username, config->common.users[j].username))
                {
                   usr = i;
                }
@@ -2731,7 +2780,7 @@ wal_streaming_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __
                for (int j = 0;
                     follow == -1 && j < config->common.number_of_servers; j++)
                {
-                  if (!strcmp(config->common.servers[j].follow, config->common.servers[i].name))
+                  if (pgmoneta_compare_string(config->common.servers[j].follow, config->common.servers[i].name))
                   {
                      follow = j;
                   }
@@ -2751,7 +2800,7 @@ wal_streaming_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __
                for (int j = 0; !start && j < config->common.number_of_servers;
                     j++)
                {
-                  if (!strcmp(config->common.servers[i].follow, config->common.servers[j].name) &&
+                  if (pgmoneta_compare_string(config->common.servers[i].follow, config->common.servers[j].name) &&
                       config->common.servers[j].wal_streaming <= 0)
                   {
                      start = true;
@@ -2826,6 +2875,7 @@ reload_configuration(bool* restart)
    if (old_metrics != config->metrics)
    {
       shutdown_metrics();
+      shutdown_nagios();
 
       free(metrics_fds);
       metrics_fds = NULL;
@@ -3015,7 +3065,7 @@ init_replication_slot(int server)
    usr = -1;
    for (int i = 0; usr == -1 && i < config->common.number_of_users; i++)
    {
-      if (!strcmp(config->common.servers[server].username, config->common.users[i].username))
+      if (pgmoneta_compare_string(config->common.servers[server].username, config->common.users[i].username))
       {
          usr = i;
       }
@@ -3208,8 +3258,7 @@ create_pidfile(void)
 {
    char buffer[64];
    pid_t pid;
-   int r;
-   int fd;
+   FILE* pid_file = NULL;
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
@@ -3234,19 +3283,19 @@ create_pidfile(void)
 
    if (strlen(config->pidfile) > 0)
    {
-      // check pidfile is not there
-      if (access(config->pidfile, F_OK) == 0)
-      {
-         pgmoneta_log_fatal("PID file [%s] exists, is there another instance running ?", config->pidfile);
-         goto error;
-      }
-
       pid = getpid();
 
-      fd = open(config->pidfile, O_WRONLY | O_CREAT | O_EXCL, 0644);
-      if (fd < 0)
+      int status = pgmoneta_fopen_secure(config->pidfile, "wx", &pid_file);
+      if (status != 0)
       {
-         warn("Could not create PID file '%s'", config->pidfile);
+         if (status == 1)
+         {
+            pgmoneta_log_fatal("PID file [%s] exists, is there another instance running ?", config->pidfile);
+         }
+         else
+         {
+            warn("Could not create PID file '%s'", config->pidfile);
+         }
          goto error;
       }
 
@@ -3254,14 +3303,19 @@ create_pidfile(void)
 
       pgmoneta_permission(config->pidfile, 6, 4, 0);
 
-      r = write(fd, &buffer[0], strlen(buffer));
-      if (r < 0)
+      if (fputs(buffer, pid_file) == EOF)
+      {
+         warn("Could not write pidfile '%s'", config->pidfile);
+         fclose(pid_file);
+         goto error;
+      }
+
+      /* The write is buffered, so the flush inside fclose() can still fail */
+      if (fclose(pid_file) == EOF)
       {
          warn("Could not write pidfile '%s'", config->pidfile);
          goto error;
       }
-
-      close(fd);
    }
 
    return 0;
@@ -3296,6 +3350,7 @@ shutdown_ports(bool remove)
    if (config->metrics > 0)
    {
       shutdown_metrics();
+      shutdown_nagios();
    }
 
    if (config->management > 0)

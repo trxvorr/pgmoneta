@@ -29,73 +29,14 @@
 #ifndef PGMONETA_EXTRACTION_H
 #define PGMONETA_EXTRACTION_H
 
+#include <deque.h>
+
 #include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* File type bitmask constants */
-#define PGMONETA_FILE_TYPE_UNKNOWN    0x0000 /* Unknown file type */
-#define PGMONETA_FILE_TYPE_WAL        0x0001 /* WAL file (24-char hex name) */
-#define PGMONETA_FILE_TYPE_COMPRESSED 0x0002 /* Compressed (any type) */
-#define PGMONETA_FILE_TYPE_GZIP       0x0004 /* Compressed with gzip (.gz) */
-#define PGMONETA_FILE_TYPE_LZ4        0x0008 /* Compressed with lz4 (.lz4) */
-#define PGMONETA_FILE_TYPE_ZSTD       0x0010 /* Compressed with zstd (.zstd) */
-#define PGMONETA_FILE_TYPE_BZ2        0x0020 /* Compressed with bzip2 (.bz2) */
-#define PGMONETA_FILE_TYPE_ENCRYPTED  0x0040 /* Encrypted (.aes) */
-#define PGMONETA_FILE_TYPE_TAR        0x0080 /* TAR archive (.tar) */
-#define PGMONETA_FILE_TYPE_PARTIAL    0x0100 /* Partial file (.partial) */
-#define PGMONETA_FILE_TYPE_ALL        0xFFFF /* Match all file types */
-#define PGMONETA_FILE_TYPE_COMPRESSION_MASK \
-   (PGMONETA_FILE_TYPE_COMPRESSED | PGMONETA_FILE_TYPE_GZIP | PGMONETA_FILE_TYPE_LZ4 | PGMONETA_FILE_TYPE_ZSTD | PGMONETA_FILE_TYPE_BZ2)
-#define PGMONETA_FILE_TYPE_EXTRACTION_MASK \
-   (PGMONETA_FILE_TYPE_ENCRYPTED | PGMONETA_FILE_TYPE_TAR | PGMONETA_FILE_TYPE_COMPRESSION_MASK)
-
-/**
- * Get the file type bitmask for a given file path.
- * The bitmask can include combinations of:
- * - PGMONETA_FILE_TYPE_WAL (24-char hex WAL file)
- * - PGMONETA_FILE_TYPE_COMPRESSED (any compression)
- * - PGMONETA_FILE_TYPE_GZIP (.gz)
- * - PGMONETA_FILE_TYPE_LZ4 (.lz4)
- * - PGMONETA_FILE_TYPE_ZSTD (.zstd)
- * - PGMONETA_FILE_TYPE_BZ2 (.bz2)
- * - PGMONETA_FILE_TYPE_ENCRYPTED (.aes)
- * - PGMONETA_FILE_TYPE_TAR (.tar)
- * - PGMONETA_FILE_TYPE_PARTIAL (.partial)
- * @param file_path The file path to check
- * @return Bitmask of file type flags
- */
-uint32_t
-pgmoneta_extraction_get_file_type(char* file_path);
-
-/**
- * Remove extraction-related suffixes from a file path.
- * For example, "001.tar.zstd.aes" becomes "001" when the bitmask includes TAR, ZSTD, and ENCRYPTED.
- *
- * When type is 0, the bitmask is detected automatically from the file path.
- *
- * @param file_path The source file path
- * @param type The file type bitmask (PGMONETA_FILE_TYPE_*), or 0 for auto-detect
- * @param base_name Resulting base path without extraction suffixes
- * @return 0 upon success, otherwise 1
- */
-int
-pgmoneta_extraction_strip_suffix(char* file_path, uint32_t type, char** base_name);
-
-/**
- * Build the compound suffix string for a given compression and encryption configuration.
- * For example, with ZSTD compression and AES encryption, produces ".zstd.aes".
- *
- * @param compression The compression type (COMPRESSION_* constant)
- * @param encryption The encryption type (ENCRYPTION_* constant)
- * @param suffix The resulting suffix string (caller must free)
- * @return 0 upon success, otherwise 1
- */
-int
-pgmoneta_extraction_get_suffix(int compression, int encryption, char** suffix);
 
 /**
  * Extract a file using the streamer for in-memory decryption and decompression.
@@ -110,30 +51,31 @@ pgmoneta_extraction_get_suffix(int compression, int encryption, char** suffix);
  * @param file_path The source file path
  * @param type The file type bitmask (PGMONETA_FILE_TYPE_*), or 0 for auto-detect
  * @param copy If true, extract to destination path. If false, extract archive to destination directory.
+ * @param failures The failure deque
  * @param destination When copy is true, points to the destination path (updated to final extracted path).
  *                    When copy is false, points to the output directory for extraction (not modified).
  * @return 0 upon success, otherwise 1
  */
 int
-pgmoneta_extract_file(char* file_path, uint32_t type, bool copy, char** destination);
+pgmoneta_extract_file(char* file_path, uint32_t type, bool copy, struct deque* failures, char** destination);
 
 /**
  * Extract a file from a backup to a target location.
  * Wrapper around pgmoneta_extract_file for backup-relative paths.
  *
  * Builds the source path from backup data directory + relative_file_path,
- * and the destination from target_directory (or workspace if NULL) + relative_file_path.
+ * and the destination from workspace/label/ + relative_file_path.
  * Then calls pgmoneta_extract_file(from, 0, true, &to).
  *
  * @param server The server index
  * @param label The backup label
  * @param relative_file_path The file path relative to the backup data directory
- * @param target_directory The target directory (NULL to use workspace/label/)
+ * @param failures The failure deque
  * @param target_file [out] The final extracted file path (caller must free)
  * @return 0 upon success, otherwise 1
  */
 int
-pgmoneta_extract_backup_file(int server, char* label, char* relative_file_path, char* target_directory, char** target_file);
+pgmoneta_extract_backup_file(int server, char* label, char* relative_file_path, struct deque* failures, char** target_file);
 
 #ifdef __cplusplus
 }

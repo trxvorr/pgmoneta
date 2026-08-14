@@ -27,14 +27,16 @@
  */
 
 /* pgmoneta */
+#include <pgmoneta.h>
 #include <compression.h>
 #include <extraction.h>
+#include <files.h>
 #include <logging.h>
-#include <pgmoneta.h>
 #include <stream.h>
 #include <tar.h>
 #include <utils.h>
 #include <vfile.h>
+#include <workers.h>
 
 #include <libgen.h>
 #include <stdint.h>
@@ -56,234 +58,6 @@ normalize_file_type(uint32_t type)
    }
 
    return normalized;
-}
-
-uint32_t
-pgmoneta_extraction_get_file_type(char* file_path)
-{
-   uint32_t type = PGMONETA_FILE_TYPE_UNKNOWN;
-   char* file_path_copy = NULL;
-   char* basename_copy = NULL;
-   char* current = NULL;
-   char* dot = NULL;
-
-   if (file_path == NULL)
-   {
-      return type;
-   }
-
-   file_path_copy = pgmoneta_append(file_path_copy, file_path);
-   if (file_path_copy == NULL)
-   {
-      return type;
-   }
-
-   basename_copy = pgmoneta_append(basename_copy, basename(file_path_copy));
-   free(file_path_copy);
-   file_path_copy = NULL;
-   if (basename_copy == NULL)
-   {
-      return type;
-   }
-
-   current = basename_copy;
-
-   /* Check for encryption suffix first (.aes) */
-   if (pgmoneta_ends_with(current, ".aes"))
-   {
-      type |= PGMONETA_FILE_TYPE_ENCRYPTED;
-      current[strlen(current) - 4] = '\0';
-   }
-
-   /* Check for compression suffixes - set both generic and specific flags */
-   if (pgmoneta_ends_with(current, ".gz"))
-   {
-      type |= PGMONETA_FILE_TYPE_COMPRESSED | PGMONETA_FILE_TYPE_GZIP;
-      dot = strrchr(current, '.');
-      if (dot != NULL)
-      {
-         *dot = '\0';
-      }
-   }
-   else if (pgmoneta_ends_with(current, ".lz4"))
-   {
-      type |= PGMONETA_FILE_TYPE_COMPRESSED | PGMONETA_FILE_TYPE_LZ4;
-      dot = strrchr(current, '.');
-      if (dot != NULL)
-      {
-         *dot = '\0';
-      }
-   }
-   else if (pgmoneta_ends_with(current, ".zstd"))
-   {
-      type |= PGMONETA_FILE_TYPE_COMPRESSED | PGMONETA_FILE_TYPE_ZSTD;
-      dot = strrchr(current, '.');
-      if (dot != NULL)
-      {
-         *dot = '\0';
-      }
-   }
-   else if (pgmoneta_ends_with(current, ".bz2"))
-   {
-      type |= PGMONETA_FILE_TYPE_COMPRESSED | PGMONETA_FILE_TYPE_BZ2;
-      dot = strrchr(current, '.');
-      if (dot != NULL)
-      {
-         *dot = '\0';
-      }
-   }
-
-   /* Check for TAR archive after stripping compression */
-   if (pgmoneta_ends_with(current, ".tar"))
-   {
-      type |= PGMONETA_FILE_TYPE_TAR;
-      current[strlen(current) - 4] = '\0';
-   }
-
-   /* Check for .tgz (tar.gz shorthand) */
-   if (pgmoneta_ends_with(current, ".tgz"))
-   {
-      type |= PGMONETA_FILE_TYPE_TAR;
-      type |= PGMONETA_FILE_TYPE_COMPRESSED | PGMONETA_FILE_TYPE_GZIP;
-      current[strlen(current) - 4] = '\0';
-   }
-
-   /* Check for partial suffix */
-   if (pgmoneta_ends_with(current, ".partial"))
-   {
-      type |= PGMONETA_FILE_TYPE_PARTIAL;
-      current[strlen(current) - 8] = '\0';
-   }
-
-   /* Check for WAL file pattern (24-char hex) */
-   if (strlen(current) == 24 && pgmoneta_is_wal_file(current))
-   {
-      type |= PGMONETA_FILE_TYPE_WAL;
-   }
-
-   free(basename_copy);
-
-   return type;
-}
-
-int
-pgmoneta_extraction_strip_suffix(char* file_path, uint32_t type, char** base_name)
-{
-   char* current = NULL;
-   char* next = NULL;
-   uint32_t effective_type = type;
-
-   if (base_name == NULL)
-   {
-      goto error;
-   }
-
-   *base_name = NULL;
-
-   if (file_path == NULL)
-   {
-      goto error;
-   }
-
-   current = pgmoneta_append(current, file_path);
-   if (current == NULL)
-   {
-      goto error;
-   }
-
-   if (effective_type == PGMONETA_FILE_TYPE_UNKNOWN)
-   {
-      effective_type = pgmoneta_extraction_get_file_type(current);
-   }
-   effective_type = normalize_file_type(effective_type);
-
-   if (effective_type & PGMONETA_FILE_TYPE_ENCRYPTED)
-   {
-      if (pgmoneta_strip_extension(current, &next))
-      {
-         goto error;
-      }
-
-      free(current);
-      current = next;
-      next = NULL;
-   }
-
-   if (effective_type & PGMONETA_FILE_TYPE_COMPRESSION_MASK)
-   {
-      if (pgmoneta_strip_extension(current, &next))
-      {
-         goto error;
-      }
-
-      free(current);
-      current = next;
-      next = NULL;
-   }
-
-   if (effective_type & PGMONETA_FILE_TYPE_TAR)
-   {
-      if (pgmoneta_strip_extension(current, &next))
-      {
-         goto error;
-      }
-
-      free(current);
-      current = next;
-      next = NULL;
-   }
-
-   *base_name = current;
-   return 0;
-
-error:
-   free(current);
-   free(next);
-   return 1;
-}
-
-int
-pgmoneta_extraction_get_suffix(int compression, int encryption, char** suffix)
-{
-   const char* compression_suffix = NULL;
-   char* result = NULL;
-
-   if (suffix == NULL)
-   {
-      goto error;
-   }
-
-   *suffix = NULL;
-
-   if (pgmoneta_compression_get_suffix(compression, &compression_suffix))
-   {
-      goto error;
-   }
-
-   if (compression_suffix != NULL)
-   {
-      result = pgmoneta_append(result, compression_suffix);
-   }
-
-   switch (encryption)
-   {
-      case ENCRYPTION_AES_256_GCM:
-      case ENCRYPTION_AES_192_GCM:
-      case ENCRYPTION_AES_128_GCM:
-         result = pgmoneta_append(result, ".aes");
-         break;
-      case ENCRYPTION_NONE:
-         break;
-      default:
-         break;
-   }
-
-   *suffix = result;
-   return 0;
-
-error:
-   free(result);
-   return 1;
 }
 
 /**
@@ -353,10 +127,11 @@ bitmask_to_encryption(uint32_t file_type)
  * @param dst The destination file path (e.g. "file")
  * @param encryption The encryption type (ENCRYPTION_* constant)
  * @param compression The compression type (COMPRESSION_* constant)
+ * @param failures The failure deque
  * @return 0 upon success, otherwise 1
  */
 static int
-stream_restore_file(char* src, char* dst, int encryption, int compression)
+stream_restore_file(char* src, char* dst, int encryption, int compression, struct deque* failures)
 {
    struct streamer* strm = NULL;
    struct vfile* reader = NULL;
@@ -429,6 +204,7 @@ stream_restore_file(char* src, char* dst, int encryption, int compression)
    return 0;
 
 error:
+   pgmoneta_record_failure(failures, "extraction: failed to restore %s", src);
    pgmoneta_vfile_destroy(reader);
    if (!writer_added)
    {
@@ -451,7 +227,7 @@ error:
  *   Simple file copy.
  */
 static int
-extract_file_to_path(char* file_path, uint32_t type, char** destination)
+extract_file_to_path(char* file_path, uint32_t type, struct deque* failures, char** destination)
 {
    char* dest_name = NULL;
    uint32_t file_type = type;
@@ -496,7 +272,7 @@ extract_file_to_path(char* file_path, uint32_t type, char** destination)
    }
 
    /* Stream-restore: decrypt+decompress in one pass, no temp files */
-   if (stream_restore_file(file_path, dest_name, encryption, compression))
+   if (stream_restore_file(file_path, dest_name, encryption, compression, failures))
    {
       goto error;
    }
@@ -521,7 +297,7 @@ error:
  *   3. Clean up temp tar
  */
 static int
-extract_archive_to_directory(char* file_path, uint32_t type, char* destination)
+extract_archive_to_directory(char* file_path, uint32_t type, struct deque* failures, char* destination)
 {
    char* archive_path = NULL;
    bool is_generated_archive = false;
@@ -562,7 +338,7 @@ extract_archive_to_directory(char* file_path, uint32_t type, char* destination)
       is_generated_archive = true;
 
       /* Stream-restore: decrypt+decompress in one pass to temp tar */
-      if (stream_restore_file(file_path, archive_path, encryption, compression))
+      if (stream_restore_file(file_path, archive_path, encryption, compression, failures))
       {
          goto error;
       }
@@ -607,11 +383,11 @@ error:
 }
 
 int
-pgmoneta_extract_file(char* file_path, uint32_t type, bool copy, char** destination)
+pgmoneta_extract_file(char* file_path, uint32_t type, bool copy, struct deque* failures, char** destination)
 {
    if (copy)
    {
-      return extract_file_to_path(file_path, type, destination);
+      return extract_file_to_path(file_path, type, failures, destination);
    }
 
    if (destination == NULL || *destination == NULL)
@@ -619,11 +395,11 @@ pgmoneta_extract_file(char* file_path, uint32_t type, bool copy, char** destinat
       return 1;
    }
 
-   return extract_archive_to_directory(file_path, type, *destination);
+   return extract_archive_to_directory(file_path, type, failures, *destination);
 }
 
 int
-pgmoneta_extract_backup_file(int server, char* label, char* relative_file_path, char* target_directory, char** target_file)
+pgmoneta_extract_backup_file(int server, char* label, char* relative_file_path, struct deque* failures, char** target_file)
 {
    char* from = NULL;
    char* to = NULL;
@@ -652,16 +428,9 @@ pgmoneta_extract_backup_file(int server, char* label, char* relative_file_path, 
       goto error;
    }
 
-   if (target_directory == NULL || strlen(target_directory) == 0)
-   {
-      to = pgmoneta_get_server_workspace(server);
-      to = pgmoneta_append(to, label);
-      to = pgmoneta_append(to, "/");
-   }
-   else
-   {
-      to = pgmoneta_append(to, target_directory);
-   }
+   to = pgmoneta_get_server_workspace(server);
+   to = pgmoneta_append(to, label);
+   to = pgmoneta_append(to, "/");
 
    if (!pgmoneta_ends_with(to, "/"))
    {
@@ -669,8 +438,9 @@ pgmoneta_extract_backup_file(int server, char* label, char* relative_file_path, 
    }
    to = pgmoneta_append(to, relative_file_path);
 
-   if (pgmoneta_extract_file(from, 0, true, &to))
+   if (pgmoneta_extract_file(from, 0, true, failures, &to))
    {
+      pgmoneta_record_failure(failures, "extract_backup_file: failed to extract %s from label %s", relative_file_path, label);
       goto error;
    }
 

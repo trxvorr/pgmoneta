@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -373,6 +373,8 @@ pgmoneta_status_details(SSL* ssl, int client_fd, uint8_t compression, uint8_t en
       pgmoneta_json_put(js, MANAGEMENT_ARGUMENT_ONLINE, (uintptr_t)config->common.servers[i].online, ValueBool);
       pgmoneta_json_put(js, MANAGEMENT_ARGUMENT_PRIMARY, (uintptr_t)config->common.servers[i].primary, ValueBool);
 
+      pgmoneta_json_put(js, MANAGEMENT_ARGUMENT_WAL_STREAMING, (uintptr_t)(config->common.servers[i].wal_streaming > 0), ValueBool);
+
       d = pgmoneta_get_server(i);
 
       server_size = pgmoneta_directory_size(d);
@@ -573,7 +575,7 @@ pgmoneta_progress(SSL* ssl, int client_fd, uint8_t compression, uint8_t encrypti
 
    for (int i = 0; srv == -1 && i < config->common.number_of_servers; i++)
    {
-      if (!strcmp(config->common.servers[i].name, server))
+      if (pgmoneta_compare_string(config->common.servers[i].name, server))
       {
          srv = i;
       }

@@ -164,8 +164,9 @@ encryption_execute(char* name __attribute__((unused)), struct art* nodes)
       if (workers != NULL)
       {
          pgmoneta_workers_wait(workers);
-         if (!workers->outcome)
+         if (!pgmoneta_workers_outcome_ok(workers))
          {
+            pgmoneta_workers_transfer_failures(workers, nodes);
             goto error;
          }
       }
@@ -305,13 +306,20 @@ decryption_execute(char* name __attribute__((unused)), struct art* nodes)
       pgmoneta_workers_initialize(number_of_workers, &workers);
    }
 
-   pgmoneta_decrypt_directory(base, workers, NULL);
+   if (server >= 0 && pgmoneta_is_progress_enabled(server))
+   {
+      int file_count = pgmoneta_count_files(base);
+      pgmoneta_progress_set_total(server, file_count);
+   }
+
+   pgmoneta_decrypt_directory(server, base, workers, NULL);
 
    if (workers != NULL)
    {
       pgmoneta_workers_wait(workers);
-      if (!workers->outcome)
+      if (!pgmoneta_workers_outcome_ok(workers))
       {
+         pgmoneta_workers_transfer_failures(workers, nodes);
          ret = 1;
          goto error;
       }

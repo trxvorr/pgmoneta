@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without
@@ -33,6 +33,7 @@
 #include <backup.h>
 #include <logging.h>
 #include <security.h>
+#include <storage.h>
 #include <utils.h>
 #include <workflow.h>
 
@@ -135,13 +136,13 @@ ssh_storage_setup(char* name __attribute__((unused)), struct art* nodes)
    pgmoneta_dump_art(nodes);
 
    assert(pgmoneta_art_contains_key(nodes, NODE_SERVER_ID));
-   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
 #endif
 
    server = (int)pgmoneta_art_search(nodes, NODE_SERVER_ID);
    label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
 
-   pgmoneta_log_debug("SSH storage engine (setup): %s/%s", config->common.servers[server].name, label);
+   pgmoneta_log_debug("SSH storage engine (setup): %s/%s", config->common.servers[server].name,
+                      label != NULL ? label : "(wal)");
 
    session = ssh_new();
 
@@ -152,6 +153,11 @@ ssh_storage_setup(char* name __attribute__((unused)), struct art* nodes)
 
    ssh_options_set(session, SSH_OPTIONS_USER, config->ssh_username);
    ssh_options_set(session, SSH_OPTIONS_HOST, config->ssh_hostname);
+   if (config->ssh_port > 0)
+   {
+      unsigned int port = (unsigned int)config->ssh_port;
+      ssh_options_set(session, SSH_OPTIONS_PORT, &port);
+   }
 
    if (strlen(config->ssh_ciphers) == 0)
    {
@@ -279,9 +285,6 @@ ssh_storage_backup_execute(char* name __attribute__((unused)), struct art* nodes
 {
    int server = -1;
    char* label = NULL;
-   struct timespec start_t;
-   struct timespec end_t;
-   double remote_ssh_elapsed_time;
    char* server_path = NULL;
    char* local_root = NULL;
    char* remote_root = NULL;
@@ -290,13 +293,6 @@ ssh_storage_backup_execute(char* name __attribute__((unused)), struct art* nodes
    int number_of_backups = 0;
    struct backup** backups = NULL;
    struct main_configuration* config;
-   struct backup* temp_backup = NULL;
-
-#ifdef HAVE_FREEBSD
-   clock_gettime(CLOCK_MONOTONIC_FAST, &start_t);
-#else
-   clock_gettime(CLOCK_MONOTONIC_RAW, &start_t);
-#endif
 
    config = (struct main_configuration*)shmem;
 
@@ -383,27 +379,6 @@ ssh_storage_backup_execute(char* name __attribute__((unused)), struct art* nodes
       free(latest_backup_sha256);
    }
 
-#ifdef HAVE_FREEBSD
-   clock_gettime(CLOCK_MONOTONIC_FAST, &end_t);
-#else
-   clock_gettime(CLOCK_MONOTONIC_RAW, &end_t);
-#endif
-
-   remote_ssh_elapsed_time = pgmoneta_compute_duration(start_t, end_t);
-
-   if (pgmoneta_load_info(server_path, label, &temp_backup))
-   {
-      pgmoneta_log_error("Unable to get backup for directory %s", server_path);
-      goto error;
-   }
-   temp_backup->remote_ssh_elapsed_time = remote_ssh_elapsed_time;
-   if (pgmoneta_save_info(server_path, temp_backup))
-   {
-      pgmoneta_log_error("Unable to save backup info for directory %s", server_path);
-      goto error;
-   }
-
-   free(temp_backup);
    free(server_path);
    free(remote_root);
    free(local_root);
@@ -425,7 +400,6 @@ error:
       free(latest_backup_sha256);
    }
 
-   free(temp_backup);
    free(server_path);
    free(remote_root);
    free(local_root);
@@ -448,13 +422,13 @@ ssh_storage_wal_shipping_execute(char* name __attribute__((unused)), struct art*
    pgmoneta_dump_art(nodes);
 
    assert(pgmoneta_art_contains_key(nodes, NODE_SERVER_ID));
-   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
 #endif
 
    server = (int)pgmoneta_art_search(nodes, NODE_SERVER_ID);
    label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
 
-   pgmoneta_log_debug("SSH storage engine (WAL shipping/execute): %s/%s", config->common.servers[server].name, label);
+   pgmoneta_log_debug("SSH storage engine (WAL shipping/execute): %s/%s", config->common.servers[server].name,
+                      label != NULL ? label : "(wal)");
 
    remote_root = get_remote_server_wal(server);
    local_root = pgmoneta_get_server_wal(server);
@@ -484,7 +458,6 @@ ssh_storage_backup_teardown(char* name __attribute__((unused)), struct art* node
 {
    int server = -1;
    char* label = NULL;
-   char* root = NULL;
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
@@ -501,26 +474,17 @@ ssh_storage_backup_teardown(char* name __attribute__((unused)), struct art* node
 
    pgmoneta_log_debug("SSH storage engine (teardown): %s/%s", config->common.servers[server].name, label);
 
-   if (!is_error)
-   {
-      root = pgmoneta_get_server_backup_identifier_data(server, label);
-   }
-   else
-   {
-      root = pgmoneta_get_server_backup_identifier(server, label);
-   }
-
-   pgmoneta_delete_directory(root);
-
    pgmoneta_art_destroy(tree_map);
-
-   free(root);
+   tree_map = NULL;
 
    free(latest_remote_root);
+   latest_remote_root = NULL;
 
    sftp_free(sftp);
+   sftp = NULL;
 
    ssh_free(session);
+   session = NULL;
 
    return 0;
 }
@@ -538,13 +502,13 @@ ssh_storage_wal_shipping_teardown(char* name __attribute__((unused)), struct art
    pgmoneta_dump_art(nodes);
 
    assert(pgmoneta_art_contains_key(nodes, NODE_SERVER_ID));
-   assert(pgmoneta_art_contains_key(nodes, NODE_LABEL));
 #endif
 
    server = (int)pgmoneta_art_search(nodes, NODE_SERVER_ID);
    label = (char*)pgmoneta_art_search(nodes, NODE_LABEL);
 
-   pgmoneta_log_debug("SSH storage engine (WAL shipping/teardown): %s/%s", config->common.servers[server].name, label);
+   pgmoneta_log_debug("SSH storage engine (WAL shipping/teardown): %s/%s", config->common.servers[server].name,
+                      label != NULL ? label : "(wal)");
 
    sftp_free(sftp);
 
@@ -637,7 +601,7 @@ sftp_copy_directory(char* local_root, char* remote_root, char* relative_path)
       {
          char relative_dir[1024];
 
-         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+         if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
          {
             continue;
          }
@@ -711,7 +675,7 @@ sftp_copy_file(char* local_root, char* remote_root, char* relative_path)
 
       if ((latest_sha256 = (char*)pgmoneta_art_search(tree_map, relative_path)) != NULL)
       {
-         if (!strcmp(latest_sha256, sha256))
+         if (pgmoneta_compare_string(latest_sha256, sha256))
          {
             is_link = true;
          }
@@ -1113,4 +1077,50 @@ sftp_permission(char* path, int user, int group, int all)
    }
 
    return 0;
+}
+
+int
+ssh_upload(int server, char* label, int compression __attribute__((unused)), int encryption __attribute__((unused)))
+{
+   struct art* nodes = NULL;
+   int rc = 1;
+
+   if (pgmoneta_art_create(&nodes))
+   {
+      goto done;
+   }
+
+   if (pgmoneta_art_insert(nodes, NODE_SERVER_ID, (uintptr_t)server, ValueInt32))
+   {
+      goto done;
+   }
+
+   if (pgmoneta_art_insert(nodes, NODE_LABEL, (uintptr_t)label, ValueString))
+   {
+      goto done;
+   }
+
+   if (ssh_storage_setup("SSH", nodes))
+   {
+      goto cleanup;
+   }
+
+   rc = ssh_storage_backup_execute("SSH", nodes);
+
+cleanup:
+   if (tree_map != NULL)
+   {
+      pgmoneta_art_destroy(tree_map);
+      tree_map = NULL;
+   }
+   free(latest_remote_root);
+   latest_remote_root = NULL;
+   sftp_free(sftp);
+   sftp = NULL;
+   ssh_free(session);
+   session = NULL;
+
+done:
+   pgmoneta_art_destroy(nodes);
+   return rc;
 }

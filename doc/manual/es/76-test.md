@@ -18,9 +18,9 @@ y depuración.
 
 Toda la configuración, registros, informes de cobertura y datos estarán en `/tmp/pgmoneta-test/`, y se ejecutará una limpieza ya sea que el script salga normalmente o no. pgmoneta será forzado a apagar si no termina normalmente. Así que no te preocupes por que tu configuración local sea alterada. El contenedor será detenido y eliminado cuando el script salga o sea terminado.
 
-**Solo configurar (sin pruebas):** Ejecuta `<PATH_TO_PGMONETA>/test/check.sh build` para preparar el entorno de prueba (imagen, compilación de pgmoneta, contenedor, configuración) sin ejecutar pruebas. Esto siempre hace una compilación completa.
+**Solo configurar (sin pruebas):** Ejecuta `<PATH_TO_PGMONETA>/test/check.sh build` para preparar el entorno de prueba (imagen, compilación de pgmoneta, contenedor, configuración) sin ejecutar pruebas. pgmoneta se (re)compila solo cuando falta un binario o cuando un archivo fuente es más reciente que los binarios compilados; elimina el directorio `build/` si necesitas una recompilación limpia.
 
-**Prueba única o módulo:** Ejecuta `<PATH_TO_PGMONETA>/test/check.sh -t <test_name>` o `<PATH_TO_PGMONETA>/test/check.sh -m <module_name>` (forma larga: `--test`, `--module`). El script configura el entorno automáticamente cuando es necesario, así que no necesitas ejecutar el conjunto completo primero. Para iteración rápida, ejecuta `<PATH_TO_PGMONETA>/test/check.sh build` una vez, luego `<PATH_TO_PGMONETA>/test/check.sh -t <test_name>` (o `-m <module_name>`) repetidamente. Las variables de entorno se reinician cuando la ejecución de prueba finaliza o es abortada.
+**Prueba única o módulo:** Ejecuta `<PATH_TO_PGMONETA>/test/check.sh -t <test_name>` o `<PATH_TO_PGMONETA>/test/check.sh -m <module_name>` (forma larga: `--test`, `--module`). El script configura el entorno automáticamente cuando es necesario y recompila pgmoneta cada vez que tus fuentes son más recientes que los binarios, así que no necesitas ejecutar el conjunto completo ni recompilar manualmente primero. Para una iteración rápida, simplemente ejecuta `<PATH_TO_PGMONETA>/test/check.sh -t <test_name>` (o `-m <module_name>`) repetidamente; los cambios se recogen en la siguiente ejecución. Las variables de entorno se reinician cuando la ejecución de prueba finaliza o es abortada.
 
 Se recomienda que **SIEMPRE** ejecutes tests antes de presentar un PR.
 
@@ -35,7 +35,7 @@ MCTF (Minimal C Test Framework) es el test framework personalizado de pgmoneta d
 - **Filtrado de pruebas** - Ejecuta pruebas por patrón de nombre (`-t`) o por módulo (`-m`)
 - **Omisión de pruebas** - Omite tests condicionalmente usando `MCTF_SKIP()` cuando los requisitos previos no se cumplen
 - **Corte de registro de pgmoneta por prueba y validación** - Captura la ventana de registro de cada prueba en `/tmp/pgmoneta-test/log/<module>__<test_name>.pgmoneta.log`; las pruebas positivas fallan en líneas `ERROR` inesperadas, mientras que `MCTF_TEST_NEGATIVE` se usa para escenarios de error esperado
-- **Tiempo de ejecución máximo (puerta de rendimiento)** - `MCTF_TEST_MAX(name, seconds)` falla el test si se ejecuta más tiempo del límite; `MCTF_TEST_MAX_NEGATIVE(name, seconds)` agrega un límite de tiempo a una prueba negativa. Usa para detectar regresiones de rendimiento (p. ej., después de cambios de OpenSSL).
+- **Tiempo de ejecución máximo (puerta de rendimiento)** - `MCTF_TEST_MAX(name, seconds)` falla el test si se ejecuta más tiempo del límite; `MCTF_TEST_MAX_NEGATIVE(name, seconds)` agrega un límite de tiempo a una prueba negativa. Usa para detectar regresiones de rendimiento (p. ej., después de cambios de OpenSSL). Es un límite superior fijo, no una comparación: para medir si un cambio realmente hizo pgmoneta más rápido o más lento, consulta [BENCHMARK.md](https://github.com/pgmoneta/pgmoneta/blob/main/doc/BENCHMARK.md).
 - **Hooks del ciclo de vida** – Configuración/desmontaje automático por prueba y por módulo a través de `MCTF_TEST_SETUP`, `MCTF_TEST_TEARDOWN`, `MCTF_MODULE_SETUP`, `MCTF_MODULE_TEARDOWN`
 - **Instantánea de configuración/restauración** – `pgmoneta_test_config_save()` / `pgmoneta_test_config_restore()` para aislar cambios de configuración de memoria compartida entre pruebas
 - **Patrón de limpieza** - Limpieza estructurada usando etiquetas goto para gestión de recursos
@@ -349,3 +349,12 @@ y reemplaza `pgmoneta_test_generate_check_point_shutdown_v17` con la función qu
 Si el tipo de registro que estás agregando tiene diferencias entre versiones de PostgreSQL (13-17), necesitarás implementar una función de generación por versión (`generate_rec_x` -> `generate_rec_x_v16`, `generate_rec_x_v17`, etc.).
 
 Para simplicidad, por favor crea un conjunto de pruebas por versión de postgres donde la implementación reside en `test/libpgmonetatest/tswalutils/tswalutils_<version>.c` y los casos de prueba en `test/testcases/test_wal_utils.c` y agrega caso de prueba por tipo de registro dentro de esta versión. Puedes ver [este caso de prueba](../../../../../test/testcases/test_wal_utils.c) como referencia.
+
+**Medir el rendimiento**
+
+Los tests responden *pasa o falla*; no te dicen si un cambio hizo pgmoneta más rápido o más lento.
+`MCTF_TEST_MAX` es un límite superior fijo, no una comparación, así que tampoco puede confirmar una
+mejora.
+
+Para medir el impacto de un cambio en el rendimiento, y para comparar una rama con `main` antes de
+abrir un PR, consulta [BENCHMARK.md](https://github.com/pgmoneta/pgmoneta/blob/main/doc/BENCHMARK.md).

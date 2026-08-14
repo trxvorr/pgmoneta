@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -49,6 +49,7 @@
 
 static int get_primary(SSL* ssl, int socket, bool* primary);
 static int get_wal_level(SSL* ssl, int socket, bool* replica);
+static int get_track_commit_timestamp(SSL* ssl, int socket, bool* enabled);
 static int get_wal_size(SSL* ssl, int socket, int* ws);
 static int get_checksums(SSL* ssl, int socket, bool* checksums);
 static int get_segment_size(SSL* ssl, int socket, size_t* segsz);
@@ -88,6 +89,7 @@ pgmoneta_server_info(int srv, SSL* ssl, int socket)
    pgmoneta_server_set_online(srv, true);
    config->common.servers[srv].valid = false;
    config->common.servers[srv].checksums = false;
+   config->common.servers[srv].track_commit_timestamp = false;
 
    if (pgmoneta_extract_server_parameters(&server_parameters))
    {
@@ -127,6 +129,20 @@ pgmoneta_server_info(int srv, SSL* ssl, int socket)
    }
 
    pgmoneta_log_debug("%s/wal_level %s", config->common.servers[srv].name, config->common.servers[srv].valid ? "Yes" : "No");
+
+   if (get_track_commit_timestamp(ssl, socket, &config->common.servers[srv].track_commit_timestamp))
+   {
+      pgmoneta_log_error("Unable to determine track_commit_timestamp for %s", config->common.servers[srv].name);
+      config->common.servers[srv].valid = false;
+      goto done;
+   }
+
+   if (!config->common.servers[srv].track_commit_timestamp)
+   {
+      pgmoneta_log_error("Server %s has track_commit_timestamp disabled; commit timestamps are required for WAL transaction timestamp handling", config->common.servers[srv].name);
+      config->common.servers[srv].valid = false;
+      goto done;
+   }
 
    if (get_checksums(ssl, socket, &checksums))
    {
@@ -444,7 +460,7 @@ pgmoneta_server_checkpoint(int srv, SSL* ssl, int socket, uint64_t* c_lsn, uint3
       goto error;
    }
 
-   if (!(response->is_command_complete && strcmp(response->tuples->data[0], "CHECKPOINT") == 0))
+   if (!(response->is_command_complete && pgmoneta_compare_string(response->tuples->data[0], "CHECKPOINT")))
    {
       goto error;
    }
@@ -527,7 +543,7 @@ pgmoneta_server_file_stat(int srv, SSL* ssl, int socket, char* relative_file_pat
    }
 
    cell_output = pgmoneta_query_response_get_data(response, 0);
-   if (cell_output == NULL || strcmp(cell_output, "") == 0)
+   if (cell_output == NULL || pgmoneta_compare_string(cell_output, ""))
    {
       goto error;
    }
@@ -537,14 +553,14 @@ pgmoneta_server_file_stat(int srv, SSL* ssl, int socket, char* relative_file_pat
    for (int i = 1; i < 5; i++)
    {
       cell_output = pgmoneta_query_response_get_data(response, i);
-      if (!(cell_output == NULL || strcmp(cell_output, "") == 0))
+      if (!(cell_output == NULL || pgmoneta_compare_string(cell_output, "")))
       {
          strptime(cell_output, "%Y-%m-%d %H:%M:%S", &stat.timetamps[i - 1]);
       }
    }
 
    cell_output = pgmoneta_query_response_get_data(response, 5);
-   if (cell_output == NULL || strcmp(cell_output, "") == 0)
+   if (cell_output == NULL || pgmoneta_compare_string(cell_output, ""))
    {
       goto error;
    }
@@ -715,8 +731,7 @@ pgmoneta_server_stop_backup(int srv, SSL* ssl, int socket, char* backup_data, ch
       backup_label_file = pgmoneta_append(backup_label_file, backup_data);
       backup_label_file = pgmoneta_append(backup_label_file, "/backup_label");
 
-      file = fopen(backup_label_file, "w+");
-      if (file == NULL)
+      if (pgmoneta_fopen_secure(backup_label_file, "w+", &file))
       {
          pgmoneta_log_error("Failed to open the file at %s", backup_label_file);
          goto error;
@@ -933,7 +948,7 @@ q:
 
    pgmoneta_snprintf(&wal_level[0], sizeof(wal_level), "%s", response->tuples->data[0]);
 
-   if (!strcmp("replica", wal_level) || !strcmp("logical", wal_level))
+   if (pgmoneta_compare_string("replica", wal_level) || pgmoneta_compare_string("logical", wal_level))
    {
       *replica = true;
    }
@@ -996,7 +1011,7 @@ q:
 
    pgmoneta_snprintf(&data_checksums[0], sizeof(data_checksums), "%s", response->tuples->data[0]);
 
-   if (!strcmp("on", data_checksums))
+   if (pgmoneta_compare_string("on", data_checksums))
    {
       *checksums = true;
    }
@@ -1013,6 +1028,82 @@ error:
    pgmoneta_free_query_response(response);
    pgmoneta_free_message(query_msg);
    return 1;
+}
+
+/**
+ * Checks if track_commit_timestamp is enabled on the server.
+ * Retries up to 5 times with 500ms intervals if initial query fails.
+ *
+ * @param ssl SSL connection context
+ * @param socket Socket file descriptor
+ * @param enabled Output: true if track_commit_timestamp is 'on', false otherwise
+ * @return 0 on success, 1 on failure
+ */
+static int
+get_track_commit_timestamp(SSL* ssl, int socket, bool* enabled)
+{
+   int ret;
+   int retry_count = 0;
+   const int max_retries = 5;
+   char timestamp_value[MISC_LENGTH];
+   struct message* query_msg = NULL;
+   struct query_response* response = NULL;
+
+   *enabled = false;
+
+   ret = pgmoneta_create_query_message("SHOW track_commit_timestamp;", &query_msg);
+   if (ret != MESSAGE_STATUS_OK || query_msg == NULL)
+   {
+      pgmoneta_log_error("Failed to create query message for track_commit_timestamp");
+      pgmoneta_free_message(query_msg);
+      return 1;
+   }
+
+   while (retry_count < max_retries)
+   {
+      pgmoneta_query_execute(ssl, socket, query_msg, &response);
+      if (is_valid_response(response))
+      {
+         break;
+      }
+      pgmoneta_free_query_response(response);
+      response = NULL;
+      retry_count++;
+      if (retry_count < max_retries)
+      {
+         SLEEP(500000L);
+      }
+   }
+
+   if (!is_valid_response(response))
+   {
+      pgmoneta_log_error("Failed to get track_commit_timestamp after %d attempts", max_retries);
+      pgmoneta_query_response_debug(response);
+      pgmoneta_free_query_response(response);
+      pgmoneta_free_message(query_msg);
+      return 1;
+   }
+
+   if (response->tuples == NULL || response->tuples->data == NULL || response->tuples->data[0] == NULL)
+   {
+      pgmoneta_log_error("Invalid tuple data for track_commit_timestamp query");
+      pgmoneta_free_query_response(response);
+      pgmoneta_free_message(query_msg);
+      return 1;
+   }
+
+   memset(timestamp_value, 0, sizeof(timestamp_value));
+   pgmoneta_snprintf(timestamp_value, sizeof(timestamp_value), "%s", response->tuples->data[0]);
+
+   if (pgmoneta_compare_string("on", timestamp_value))
+   {
+      *enabled = true;
+   }
+
+   pgmoneta_free_query_response(response);
+   pgmoneta_free_message(query_msg);
+
+   return 0;
 }
 
 static int
@@ -1196,7 +1287,7 @@ q:
 
    pgmoneta_snprintf(&summarize_wal[0], sizeof(summarize_wal), "%s", response->tuples->data[0]);
 
-   if (!strcmp("on", summarize_wal))
+   if (pgmoneta_compare_string("on", summarize_wal))
    {
       *sw = true;
    }
@@ -1298,7 +1389,7 @@ q:
       goto error;
    }
 
-   if (!strcmp(res, "t"))
+   if (pgmoneta_compare_string(res, "t"))
    {
       *has_role = true;
    }
@@ -1365,7 +1456,7 @@ q:
       goto error;
    }
 
-   if (!strcmp(res, "t"))
+   if (pgmoneta_compare_string(res, "t"))
    {
       *is_superuser = true;
    }
@@ -1432,7 +1523,7 @@ q:
       goto error;
    }
 
-   if (!strcmp(res, "t"))
+   if (pgmoneta_compare_string(res, "t"))
    {
       *has_privilege = true;
    }
@@ -1553,27 +1644,27 @@ transform_text_to_label_file_contents(char* text, struct label_file_contents* lf
          value++;
       }
 
-      if (!strcmp(key, "CHECKPOINT LOCATION"))
+      if (pgmoneta_compare_string(key, "CHECKPOINT LOCATION"))
       {
          memcpy(lf->checkpoint_lsn, value, strlen(value) + 1);
       }
-      else if (!strcmp(key, "BACKUP METHOD"))
+      else if (pgmoneta_compare_string(key, "BACKUP METHOD"))
       {
          memcpy(lf->backup_method, value, strlen(value) + 1);
       }
-      else if (!strcmp(key, "BACKUP FROM"))
+      else if (pgmoneta_compare_string(key, "BACKUP FROM"))
       {
          memcpy(lf->backup_from, value, strlen(value) + 1);
       }
-      else if (!strcmp(key, "START TIME"))
+      else if (pgmoneta_compare_string(key, "START TIME"))
       {
          strptime(value, "%Y-%m-%d %H:%M:%S", &lf->start_time);
       }
-      else if (!strcmp(key, "LABEL"))
+      else if (pgmoneta_compare_string(key, "LABEL"))
       {
          memcpy(lf->label, value, strlen(value) + 1);
       }
-      else if (!strcmp(key, "START TIMELINE"))
+      else if (pgmoneta_compare_string(key, "START TIMELINE"))
       {
          lf->start_tli = pgmoneta_atoi(value);
       }
@@ -1624,7 +1715,7 @@ process_server_parameters(int server, struct deque* server_parameters)
    while (pgmoneta_deque_iterator_next(iter))
    {
       pgmoneta_log_debug("%s/process server_parameter '%s'", config->common.servers[server].name, iter->tag);
-      if (!strcmp("server_version", iter->tag))
+      if (pgmoneta_compare_string("server_version", iter->tag))
       {
          char* server_version = pgmoneta_value_to_string(iter->value, FORMAT_TEXT, NULL, 0);
          if (sscanf(server_version, "%d.%d", &major, &minor) == 2)

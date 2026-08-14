@@ -85,6 +85,21 @@ int
 pgmoneta_read_block_message(SSL* ssl, int socket, struct message** msg);
 
 /**
+ * Read a complete typed message in blocking mode. The message must carry the
+ * standard header (1 byte kind + 4 byte length); the read continues until the
+ * number of bytes declared in the header has arrived, so a message split
+ * across multiple network segments is never returned partially. A message
+ * whose declared length is malformed (less than 4 bytes or larger than the
+ * read buffer) is an error.
+ * @param ssl The SSL struct
+ * @param socket The socket descriptor
+ * @param msg The resulting message
+ * @return One of MESSAGE_STATUS_ZERO, MESSAGE_STATUS_OK or MESSAGE_STATUS_ERROR
+ */
+int
+pgmoneta_read_complete_message(SSL* ssl, int socket, struct message** msg);
+
+/**
  * Read a message with a timeout
  * @param ssl The SSL struct
  * @param socket The socket descriptor
@@ -216,15 +231,6 @@ pgmoneta_write_tls(SSL* ssl, int socket);
  */
 int
 pgmoneta_create_auth_password_response(char* password, struct message** msg);
-
-/**
- * Create an auth MD5 response message
- * @param md5 The md5
- * @param msg The resulting message
- * @return 0 upon success, otherwise 1
- */
-int
-pgmoneta_create_auth_md5_response(char* md5, struct message** msg);
 
 /**
  * Write an auth SCRAM-SHA-256 message
@@ -524,7 +530,7 @@ int
 pgmoneta_consume_data_row_messages(int srv, SSL* ssl, int socket, struct stream_buffer* buffer, struct query_response** response);
 
 /**
- * Receive mainfest file from the copy stream and write to disk
+ * Receive manifest file from the copy stream and write to disk
  * @param srv The server
  * @param ssl The SSL structure
  * @param socket The socket

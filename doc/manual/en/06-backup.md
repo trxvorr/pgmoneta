@@ -141,7 +141,7 @@ This section will provide a brief idea of how `pgmoneta` performs incremental ba
 * Iterate the server files -
     * If the file is not in 'base'/'global', perform full file backup (as files not under 'base'/'global' are not WAL-logged properly)
     * Otherwise, if file was found to be modified using the summary, perform incremental backup of this file.
-    * Otherewise, the file is unchanged, now if the file size is 0 or its limit block intersect the segment (meaning the file is truncated fully/partially)
+    * Otherwise, the file is unchanged, now if the file size is 0 or its limit block intersect the segment (meaning the file is truncated fully/partially)
         * Perform full file backup
         * Otherwise, perform empty incremental backup with only a header
 * Copy all the WAL segments after and including the WAL segment in which start LSN is present
@@ -393,7 +393,7 @@ For example, setting `verification = 3600` or `verification = 1H` will perform i
 By default, the encryption is disabled. To enable this feature, modify `pgmoneta.conf`:
 
 ```
-encryption = aes-256-cbc
+encryption = aes-256-gcm
 ```
 
 Many encryption modes are supported, see the documentation for the `encryption` property for details.

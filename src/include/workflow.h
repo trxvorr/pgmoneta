@@ -50,8 +50,7 @@ extern "C" {
 #define WORKFLOW_TYPE_POST_ROLLUP        10
 
 #define WORKFLOW_TYPE_S3_LIST            100
-#define WORKFLOW_TYPE_S3_DELETE          101
-#define WORKFLOW_TYPE_S3_RESTORE         102
+#define WORKFLOW_TYPE_S3_RESTORE         101
 
 #define WORKFLOW_NAME_BACKUP             "Backup"             /**< The name of backup workflow */
 #define WORKFLOW_NAME_INCREMENTAL_BACKUP "Incremental backup" /**< The name of incremental backup workflow */
@@ -64,31 +63,50 @@ extern "C" {
 #define WORKFLOW_NAME_COMBINE_AS_IS      "Combine as is"      /**< The name of combine as is workflow */
 #define WORKFLOW_NAME_POST_ROLLUP        "Post rollup"        /**< The name of post rollup workflow */
 #define WORKFLOW_NAME_S3_LIST            "S3 list"            /**< The name of S3 list workflow */
-#define WORKFLOW_NAME_S3_DELETE          "S3 delete"          /**< The name of S3 delete workflow */
 #define WORKFLOW_NAME_S3_RESTORE         "S3 restore"         /**< The name of S3 restore workflow */
 #define WORKFLOW_NAME_UNKNOWN            "Unknown"            /**< The name of unknown workflow */
 
-#define PHASE_NONE                       0 /* No phase */
-#define PHASE_BASEBACKUP                 1 /* Base backup phase */
-#define PHASE_MANIFEST                   2 /* Manifest phase */
-#define PHASE_SHA512                     3 /* SHA512 phase */
-#define PHASE_LINKING                    4 /* Link phase */
-#define PHASE_COMPRESSION                5 /* Compression phase */
-#define PHASE_ENCRYPTION                 6 /* Encryption phase */
+#define PHASE_NONE                       0  /* No phase */
+#define PHASE_BASEBACKUP                 1  /* Base backup phase */
+#define PHASE_MANIFEST                   2  /* Manifest phase */
+#define PHASE_SHA512                     3  /* SHA512 phase */
+#define PHASE_LINKING                    4  /* Link phase */
+#define PHASE_COMPRESSION                5  /* Compression phase */
+#define PHASE_ENCRYPTION                 6  /* Encryption phase */
+#define PHASE_DELETE                     7  /* Delete phase */
+#define PHASE_INFO                       8  /* Info phase */
+#define PHASE_VERIFY                     9  /* Verify phase */
+#define PHASE_RESTORE                    10 /* Restore phase */
+#define PHASE_COPY_WAL                   11 /* Copy WAL phase */
+#define PHASE_RECOVERY_INFO              12 /* Recovery info phase */
+#define PHASE_EXCLUDED_FILES             13 /* Excluded files phase */
+#define PHASE_PERMISSIONS                14 /* Permissions phase */
+#define PHASE_CLEANUP                    15 /* Cleanup phase */
+#define PHASE_COMBINE_INCREMENTAL        16 /* Combine incremental phase */
 
-#define PHASE_NAME_BASEBACKUP            "Base backup"        /**< The name of base backup phase */
-#define PHASE_NAME_INCREMENTAL_BACKUP    "Incremental backup" /**< The name of incremental backup phase */
-#define PHASE_NAME_MANIFEST              "Manifest"           /**< The name of manifest phase */
-#define PHASE_NAME_SHA512                "SHA512"             /**< The name of SHA512 phase */
-#define PHASE_NAME_LINKING               "Linking"            /**< The name of linking phase */
-#define PHASE_NAME_LINK                  "Link"               /**< The name of link phase */
-#define PHASE_NAME_COMPRESSION           "Compression"        /**< The name of compression phase */
-#define PHASE_NAME_ENCRYPTION            "Encryption"         /**< The name of encryption phase */
-#define PHASE_NAME_ZSTD                  "ZSTD"               /**< The name of ZSTD phase */
-#define PHASE_NAME_GZIP                  "GZip"               /**< The name of GZip phase */
-#define PHASE_NAME_LZ4                   "LZ4"                /**< The name of LZ4 phase */
-#define PHASE_NAME_BZIP2                 "BZip2"              /**< The name of BZip2 phase */
-#define PHASE_NAME_UNKNOWN               "Unknown"            /**< The name of unknown phase */
+#define PHASE_NAME_BASEBACKUP            "Base backup"             /**< The name of base backup phase */
+#define PHASE_NAME_RESTORE               "Restore backup"          /**< The name of restore backup phase */
+#define PHASE_NAME_VERIFY                "Verify backup"           /**< The name of verify backup phase */
+#define PHASE_NAME_DELETE                "Delete backup"           /**< The name of delete backup phase */
+#define PHASE_NAME_COMBINE_INCREMENTAL   "Combine incremental"     /**< The name of combine incremental phase */
+#define PHASE_NAME_INFO                  "Info"                    /**< The name of info phase */
+#define PHASE_NAME_INCREMENTAL_BACKUP    "Incremental backup"      /**< The name of incremental backup phase */
+#define PHASE_NAME_MANIFEST              "Manifest"                /**< The name of manifest phase */
+#define PHASE_NAME_SHA512                "SHA512"                  /**< The name of SHA512 phase */
+#define PHASE_NAME_LINKING               "Linking"                 /**< The name of linking phase */
+#define PHASE_NAME_LINK                  "Link"                    /**< The name of link phase */
+#define PHASE_NAME_COMPRESSION           "Compression"             /**< The name of compression phase */
+#define PHASE_NAME_ENCRYPTION            "Encryption"              /**< The name of encryption phase */
+#define PHASE_NAME_ZSTD                  "ZSTD"                    /**< The name of ZSTD phase */
+#define PHASE_NAME_GZIP                  "GZip"                    /**< The name of GZip phase */
+#define PHASE_NAME_LZ4                   "LZ4"                     /**< The name of LZ4 phase */
+#define PHASE_NAME_BZIP2                 "BZip2"                   /**< The name of BZip2 phase */
+#define PHASE_NAME_COPY_WAL              "Copy WAL"                /**< The name of copy WAL phase */
+#define PHASE_NAME_RECOVERY_INFO         "Recovery info"           /**< The name of recovery info phase */
+#define PHASE_NAME_EXCLUDED_FILES        "Recovery excluded files" /**< The name of recovery excluded files phase */
+#define PHASE_NAME_PERMISSIONS           "Permissions"             /**< The name of permissions phase */
+#define PHASE_NAME_CLEANUP               "Cleanup"                 /**< The name of cleanup phase */
+#define PHASE_NAME_UNKNOWN               "Unknown"                 /**< The name of unknown phase */
 
 #define PERMISSION_TYPE_BACKUP           0
 #define PERMISSION_TYPE_RESTORE          1
@@ -120,6 +138,7 @@ extern "C" {
 #define NODE_TARGET_BASE                 "target_base"         /* The target base directory */
 #define NODE_TARGET_FILE                 "target_file"         /* The target file */
 #define NODE_TARGET_ROOT                 "target_root"         /* The target root directory */
+#define NODE_WORKER_ERRORS               "worker_errors"       /* Deque of worker failure messages */
 
 /* Supplied by the user */
 #define USER_DIRECTORY  "directory"  /* The target root directory */

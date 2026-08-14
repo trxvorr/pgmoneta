@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -28,7 +28,7 @@
 
 /* pgmoneta */
 #include <pgmoneta.h>
-#include <extraction.h>
+#include <files.h>
 #include <link.h>
 #include <logging.h>
 #include <restore.h>
@@ -65,7 +65,7 @@ pgmoneta_link_manifest(char* base_from, char* base_to, char* from, struct art* c
 
    while ((entry = readdir(from_dir)))
    {
-      if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+      if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
       {
          continue;
       }
@@ -107,7 +107,7 @@ pgmoneta_link_manifest(char* base_from, char* base_to, char* from, struct art* c
 
                if (workers != NULL)
                {
-                  if (workers->outcome)
+                  if (pgmoneta_workers_outcome_ok(workers))
                   {
                      pgmoneta_workers_add(workers, do_link, (struct worker_common*)wi);
                   }
@@ -197,7 +197,7 @@ pgmoneta_relink(char* from, char* to, struct workers* workers)
 
    while ((entry = readdir(from_dir)))
    {
-      if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+      if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, ".."))
       {
          continue;
       }
@@ -244,7 +244,7 @@ pgmoneta_relink(char* from, char* to, struct workers* workers)
 
                if (workers != NULL)
                {
-                  if (workers->outcome)
+                  if (pgmoneta_workers_outcome_ok(workers))
                   {
                      pgmoneta_workers_add(workers, do_relink, (struct worker_common*)wi);
                   }
@@ -385,7 +385,7 @@ pgmoneta_link_comparefiles(char* from, char* to, struct workers* workers)
 
    while ((entry = readdir(from_dir)))
    {
-      if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") || !strcmp(entry->d_name, "data"))
+      if (pgmoneta_compare_string(entry->d_name, ".") || pgmoneta_compare_string(entry->d_name, "..") || pgmoneta_compare_string(entry->d_name, "data"))
       {
          continue;
       }
@@ -421,7 +421,7 @@ pgmoneta_link_comparefiles(char* from, char* to, struct workers* workers)
 
             if (workers != NULL)
             {
-               if (workers->outcome)
+               if (pgmoneta_workers_outcome_ok(workers))
                {
                   pgmoneta_workers_add(workers, do_comparefiles, (struct worker_common*)wi);
                }

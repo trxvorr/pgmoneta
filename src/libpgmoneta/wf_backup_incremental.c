@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -259,7 +259,7 @@ incr_backup_execute_14_to_16(char* name __attribute__((unused)), struct art* nod
    // find the corresponding user's index of the given server
    for (int i = 0; usr == -1 && i < config->common.number_of_users; i++)
    {
-      if (!strcmp(config->common.servers[server].username, config->common.users[i].username))
+      if (pgmoneta_compare_string(config->common.servers[server].username, config->common.users[i].username))
       {
          usr = i;
       }
@@ -738,7 +738,7 @@ incr_backup_execute_17_plus(char* name __attribute__((unused)), struct art* node
    // find the corresponding user's index of the given server
    for (int i = 0; usr == -1 && i < config->common.number_of_users; i++)
    {
-      if (!strcmp(config->common.servers[server].username, config->common.users[i].username))
+      if (pgmoneta_compare_string(config->common.servers[server].username, config->common.users[i].username))
       {
          usr = i;
       }
@@ -1156,15 +1156,13 @@ add_incremental_label_fields(char* label_file_path, char* prev_data)
    memset(label, 0, MAX_PATH);
    pgmoneta_snprintf(label, MAX_PATH, "%s/backup_label", prev_data);
 
-   label_file = fopen(label_file_path, "a");
-   if (label_file == NULL)
+   if (pgmoneta_fopen_secure(label_file_path, "a", &label_file))
    {
       pgmoneta_log_error("Unable to open backup_label file: %s", label_file_path);
       goto error;
    }
 
-   prev_label_file = fopen(label, "r");
-   if (prev_label_file == NULL)
+   if (pgmoneta_fopen_secure(label, "r", &prev_label_file))
    {
       pgmoneta_log_error("Unable to open backup_label file: %s", label);
       goto error;
@@ -1262,7 +1260,7 @@ parse_relation_file(char* backup_data, char* rel_file_path, struct rel_file_loca
       goto error;
    }
 
-   if (!strcmp(results[0], "base"))
+   if (pgmoneta_compare_string(results[0], "base"))
    {
       /*
           Parse the database path
@@ -1286,7 +1284,7 @@ parse_relation_file(char* backup_data, char* rel_file_path, struct rel_file_loca
 
       pgmoneta_mkdir(base_directory_path);
    }
-   else if (!strcmp(results[0], "global"))
+   else if (pgmoneta_compare_string(results[0], "global"))
    {
       rlocator.spcOid = SPCOID_PG_GLOBAL;
       rlocator.dbOid = 0;
@@ -1343,15 +1341,15 @@ parse_relation_file(char* backup_data, char* rel_file_path, struct rel_file_loca
 
    if (count == 2)
    {
-      if (!strcmp(results[1], "fsm"))
+      if (pgmoneta_compare_string(results[1], "fsm"))
       {
          frk = FSM_FORKNUM;
       }
-      else if (!strcmp(results[1], "vm"))
+      else if (pgmoneta_compare_string(results[1], "vm"))
       {
          frk = VISIBILITYMAP_FORKNUM;
       }
-      else if (!strcmp(results[1], "init"))
+      else if (pgmoneta_compare_string(results[1], "init"))
       {
          frk = INIT_FORKNUM;
       }
@@ -1412,8 +1410,7 @@ write_incremental_file(int server, SSL* ssl, int socket, char* backup_data,
    filepath = pgmoneta_append(filepath, file_name);
 
    /* Open the file in write mode, if not present create one */
-   file = fopen(filepath, "w+");
-   if (file == NULL)
+   if (pgmoneta_fopen_secure(filepath, "w+", &file))
    {
       pgmoneta_log_error("Write incremental file: failed to open the file at %s", relative_filename);
       goto error;
@@ -1541,8 +1538,7 @@ write_full_file(int server, SSL* ssl, int socket, char* backup_data,
    filepath = pgmoneta_append(filepath, backup_data);
    filepath = pgmoneta_append(filepath, relative_filename);
    /* Open the file in write mode, if not present create one */
-   file = fopen(filepath, "w+");
-   if (file == NULL)
+   if (pgmoneta_fopen_secure(filepath, "w+", &file))
    {
       pgmoneta_log_error("Write full file: failed to open the file at %s", relative_filename);
       goto error;
@@ -1755,7 +1751,7 @@ copy_wal_from_archive(char* start_wal_file, char* wal_dir, char* backup_data)
          }
 
          // copy and extract
-         if (pgmoneta_extract_file(src_file, 0, true, &dst_file))
+         if (pgmoneta_extract_file(src_file, 0, true, NULL, &dst_file))
          {
             goto error;
          }
@@ -1815,7 +1811,7 @@ wait_for_wal_switch(char* wal_dir, char* wal_file)
       while (pgmoneta_deque_iterator_next(it))
       {
          char* file_name = (char*)it->value->data;
-         if (strcmp(file_name, wal_file) == 0)
+         if (pgmoneta_compare_string(file_name, wal_file))
          {
             loop = 0;
          }

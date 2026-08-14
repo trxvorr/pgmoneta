@@ -315,15 +315,16 @@ hot_standby_execute(char* name __attribute__((unused)), struct art* nodes)
          pgmoneta_log_debug("hot_standby source:      %s", source);
          pgmoneta_log_debug("hot_standby destination: %s", destination);
          pgmoneta_workers_wait(workers);
-         if (workers != NULL && !workers->outcome)
+         if (workers != NULL && !pgmoneta_workers_outcome_ok(workers))
          {
+            pgmoneta_workers_transfer_failures(workers, nodes);
             error = true;
             goto cleanup;
          }
 
          if (config->common.encryption != ENCRYPTION_NONE)
          {
-            if (pgmoneta_decrypt_directory(destination, workers, NULL))
+            if (pgmoneta_decrypt_directory(-1, destination, workers, NULL))
             {
                error = true;
                goto cleanup;
@@ -331,8 +332,9 @@ hot_standby_execute(char* name __attribute__((unused)), struct art* nodes)
             if (workers != NULL)
             {
                pgmoneta_workers_wait(workers);
-               if (!workers->outcome)
+               if (!pgmoneta_workers_outcome_ok(workers))
                {
+                  pgmoneta_workers_transfer_failures(workers, nodes);
                   error = true;
                   goto cleanup;
                }
@@ -341,7 +343,7 @@ hot_standby_execute(char* name __attribute__((unused)), struct art* nodes)
 
          if (COMPRESSION_ALGORITHM(config->compression_type) != COMPRESSION_ALG_NONE)
          {
-            if (pgmoneta_decompress_directory(destination, config->compression_type, workers, NULL))
+            if (pgmoneta_decompress_directory(-1, destination, config->compression_type, workers, NULL))
             {
                error = true;
                goto cleanup;
@@ -349,8 +351,9 @@ hot_standby_execute(char* name __attribute__((unused)), struct art* nodes)
             if (workers != NULL)
             {
                pgmoneta_workers_wait(workers);
-               if (!workers->outcome)
+               if (!pgmoneta_workers_outcome_ok(workers))
                {
+                  pgmoneta_workers_transfer_failures(workers, nodes);
                   error = true;
                   goto cleanup;
                }
@@ -364,7 +367,7 @@ hot_standby_execute(char* name __attribute__((unused)), struct art* nodes)
             pgmoneta_log_debug("hot_standby_overrides source:      %s", config->common.servers[server].hot_standby_overrides[i]);
             pgmoneta_log_debug("hot_standby_overrides destination: %s", destination);
 
-            pgmoneta_copy_directory(config->common.servers[server].hot_standby_overrides[i],
+            pgmoneta_copy_directory(-1, config->common.servers[server].hot_standby_overrides[i],
                                     destination,
                                     NULL,
                                     workers);
@@ -374,8 +377,9 @@ hot_standby_execute(char* name __attribute__((unused)), struct art* nodes)
             pgmoneta_log_debug("No hot_standby_overrides %s", config->common.servers[server].hot_standby[i]);
          }
          pgmoneta_workers_wait(workers);
-         if (workers != NULL && !workers->outcome)
+         if (workers != NULL && !pgmoneta_workers_outcome_ok(workers))
          {
+            pgmoneta_workers_transfer_failures(workers, nodes);
             error = true;
             goto cleanup;
          }

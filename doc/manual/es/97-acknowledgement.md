@@ -44,7 +44,7 @@ Bassam Adnan <mailbassam@gmail.com>
 Sara Nabih <nabihsara8@gmail.com>
 Shashank Singh <shashanksgh3@gmail.com>
 Mahmoud Hamdy (TutTrue) <mahmoud.hamdy5113@gmail.com>
-Amr Shams (NightBird) <amr.shams2015.a@gmail.com>
+Amr Shams (NightBird) <amr.shams2015.as@gmail.com>
 Somye Mahajan <mahajan.somye@gmail.com>
 Shashidhar B M <shashidhar.i.0119@gmail.com>
 Seongjun Shin <shinsj4653@gmail.com>
@@ -60,6 +60,9 @@ Tarun Wadhwa <tarunwadhwa85@gmail.com>
 Pranav Prajapati <pranavprajapati586@gmail.com>
 Som Shegokar <akashshegokar2186@gmail.com>
 Ameen Sakr <ameensakr623@gmail.com>
+Harshit Shaw <shawharshit116@gmail.com>
+Ahmed Kamal <ahmedkamal200427@gmail.com>
+Rohan Mishra <kmrrohan29@gmail.com>
 ```
 
 ## Committers

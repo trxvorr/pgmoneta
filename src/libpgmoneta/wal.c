@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -147,7 +147,7 @@ pgmoneta_wal(int srv, char** argv)
    usr = -1;
    for (int i = 0; usr == -1 && i < config->common.number_of_users; i++)
    {
-      if (!strcmp(config->common.servers[srv].username, config->common.users[i].username))
+      if (pgmoneta_compare_string(config->common.servers[srv].username, config->common.users[i].username))
       {
          usr = i;
       }
@@ -953,8 +953,7 @@ wal_fetch_history(char* basedir, int timeline, SSL* ssl, int socket)
 
    history_content = pgmoneta_query_response_get_data(timeline_history_response, 1);
 
-   history_file = fopen(path, "wb");
-   if (history_file == NULL)
+   if (pgmoneta_fopen_secure(path, "wb", &history_file))
    {
       goto error;
    }
@@ -1004,8 +1003,7 @@ wal_open(char* root, char* filename, int segsize)
       size_t size = pgmoneta_get_file_size(path);
       if (size == (size_t)segsize)
       {
-         file = fopen(path, "r+b");
-         if (file == NULL)
+         if (pgmoneta_fopen_secure(path, "r+b", &file))
          {
             pgmoneta_log_error("WAL error: %s", strerror(errno));
             errno = 0;
@@ -1024,9 +1022,7 @@ wal_open(char* root, char* filename, int segsize)
       }
    }
 
-   file = fopen(path, "wb");
-
-   if (file == NULL)
+   if (pgmoneta_fopen_secure(path, "wb", &file))
    {
       pgmoneta_log_error("WAL error: %s", strerror(errno));
       errno = 0;
@@ -1037,8 +1033,6 @@ wal_open(char* root, char* filename, int segsize)
    {
       goto error;
    }
-
-   pgmoneta_permission(path, 6, 0, 0);
 
    pgmoneta_log_trace("WAL: Created %s", path);
 
@@ -1218,7 +1212,7 @@ wal_find_streaming_start(char* basedir, int segsize, uint32_t* timeline, uint32_
       // By latest we mean it has a larger xlogpos. If the xlogpos is the same(unlikely),
       // the one that's not partial is more up-to-date
       is_partial = pgmoneta_ends_with(entry->d_name, ".partial");
-      if (segname == NULL || strcmp(entry->d_name, segname) > 0 || (strcmp(entry->d_name, segname) == 0 && !is_partial))
+      if (segname == NULL || strcmp(entry->d_name, segname) > 0 || (pgmoneta_compare_string(entry->d_name, segname) && !is_partial))
       {
          segname = entry->d_name;
          high_is_partial = is_partial;
@@ -1432,7 +1426,7 @@ pgmoneta_read_mappings_from_server(int server_index)
 
    for (int i = 0; i < config->common.number_of_users; i++)
    {
-      if (strcmp(config->common.users[i].username, config->common.servers[server_index].username) == 0)
+      if (pgmoneta_compare_string(config->common.users[i].username, config->common.servers[server_index].username))
       {
          user_index = i;
          break;
@@ -1681,7 +1675,7 @@ pgmoneta_get_tablespace_oid(char* name, char** oid)
    {
       for (int i = 0; i < mappings_size; i++)
       {
-         if (oidMappings[i].type == OBJ_TABLESPACE && !strcmp(oidMappings[i].name, name))
+         if (oidMappings[i].type == OBJ_TABLESPACE && pgmoneta_compare_string(oidMappings[i].name, name))
          {
             max_digits = pgmoneta_snprintf(NULL, 0, "%d", oidMappings[i].oid) + 1;
             temp_oid = malloc(max_digits);
@@ -1725,7 +1719,7 @@ pgmoneta_get_database_oid(char* name, char** oid)
    {
       for (int i = 0; i < mappings_size; i++)
       {
-         if (oidMappings[i].type == OBJ_DATABASE && !strcmp(oidMappings[i].name, name))
+         if (oidMappings[i].type == OBJ_DATABASE && pgmoneta_compare_string(oidMappings[i].name, name))
          {
             max_digits = pgmoneta_snprintf(NULL, 0, "%d", oidMappings[i].oid) + 1;
             temp_oid = malloc(max_digits);
@@ -1769,7 +1763,7 @@ pgmoneta_get_relation_oid(char* name, char** oid)
    {
       for (int i = 0; i < mappings_size; i++)
       {
-         if (oidMappings[i].type == OBJ_RELATION && !strcmp(oidMappings[i].name, name))
+         if (oidMappings[i].type == OBJ_RELATION && pgmoneta_compare_string(oidMappings[i].name, name))
          {
             max_digits = pgmoneta_snprintf(NULL, 0, "%d", oidMappings[i].oid) + 1;
             temp_oid = malloc(max_digits);

@@ -48,6 +48,7 @@ LOG_DIR="$PGMONETA_ROOT_DIR/log"
 PG_LOG_DIR="$PGMONETA_ROOT_DIR/pg_log"
 RETROSPECT_DIR="$PGMONETA_ROOT_DIR/retrospect"
 HOT_STANDBY_DIRECTORY="$PGMONETA_ROOT_DIR/standby"
+TABLESPACE_DIR="/tmp/pgmoneta_tblspc"
 
 # BASE DIR holds all the run time data
 WORKSPACE_DIRECTORY="$BASE_DIR/pgmoneta-workspace/"
@@ -78,6 +79,8 @@ fi
 detect_container_engine() {
   if command -v podman &> /dev/null; then
     CONTAINER_ENGINE="podman"
+    export TMPDIR="${TMPDIR:-$HOME/.local/share/containers/tmp}"
+    mkdir -p "$TMPDIR"
   elif command -v docker &> /dev/null; then
     CONTAINER_ENGINE="$SUDO docker"
   else
@@ -96,11 +99,13 @@ cleanup() {
    set +e
    echo "Shutdown pgmoneta"
    if [[ -f "/tmp/pgmoneta.localhost.pid" ]]; then
-     $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CONFIGURATION_DIRECTORY/pgmoneta_cli.conf shutdown
-     sleep 5
+     if [[ -f "$CONFIGURATION_DIRECTORY/pgmoneta_cli.conf" ]]; then
+       $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CONFIGURATION_DIRECTORY/pgmoneta_cli.conf shutdown
+       sleep 5
+     fi
      if [[ -f "/tmp/pgmoneta.localhost.pid" ]]; then
        echo "Force stop pgmoneta"
-       kill -9 $(pgrep pgmoneta)
+       kill -9 $(pgrep pgmoneta) 2>/dev/null || true
        rm -f "/tmp/pgmoneta.localhost.pid"
      fi
    fi
@@ -111,6 +116,7 @@ cleanup() {
    echo "Clean Test Resources"
    if [[ -d $PGMONETA_ROOT_DIR ]]; then
       if [[ -d $BASE_DIR ]]; then
+        chmod -R u+rwx "$BASE_DIR" 2>/dev/null || true
         rm -Rf "$BASE_DIR"
       fi
 
@@ -167,6 +173,11 @@ cleanup() {
      remove_postgresql_container
    fi
 
+   if [[ -d "$TABLESPACE_DIR" ]]; then
+     chmod -R u+rwx "$TABLESPACE_DIR" 2>/dev/null || true
+     rm -Rf "$TABLESPACE_DIR"
+   fi
+
    echo "Unsetting environment variables"
    unset_pgmoneta_test_variables
 
@@ -194,9 +205,24 @@ cleanup_postgresql_image() {
   set -e
 }
 
+find_free_port() {
+  local p=$1
+  while ss -tlnp 2>/dev/null | grep -q ":$p "; do
+    p=$((p + 1))
+  done
+  echo $p
+}
+
 start_postgresql_container() {
-  # Remove existing container so we can reuse the name 
+  # Remove existing container so we can reuse the name
   remove_postgresql_container
+  # If the requested port is still occupied by a non-container process, pick a free one
+  if ss -tlnp 2>/dev/null | grep -q ":$PORT "; then
+    local free_port
+    free_port=$(find_free_port $((PORT + 1)))
+    echo "Port $PORT is already in use; using port $free_port instead"
+    PORT=$free_port
+  fi
   $CONTAINER_ENGINE run -p $PORT:5432 -v "$PG_LOG_DIR:/pglog:z" -v "$PGCONF_DIRECTORY:/conf:z"\
   --name $CONTAINER_NAME -d \
   -e PG_DATABASE=$PG_DATABASE \
@@ -240,6 +266,15 @@ start_postgresql() {
   $SUDO chmod -R 777 /conf /pgconf /pgdata /pgwal /pglog /root
   $SUDO chmod +x /root/usr/bin/run-postgresql-local
   $SUDO mkdir -p /root/usr/local/bin
+
+  if [[ "$PG_VERSION" == "17" ]]; then
+    echo "Setting up tablespace location directories (postgres-owned)"
+    $SUDO rm -Rf "$TABLESPACE_DIR"
+    $SUDO mkdir -p "$TABLESPACE_DIR/ts1" "$TABLESPACE_DIR/ts2"
+    $SUDO chown -R postgres:postgres "$TABLESPACE_DIR"
+    $SUDO chmod 777 "$TABLESPACE_DIR"
+    $SUDO chmod 700 "$TABLESPACE_DIR/ts1" "$TABLESPACE_DIR/ts2"
+  fi
 
   echo "Setting up env variables"
   export PG_DATABASE=${PG_DATABASE}
@@ -300,6 +335,7 @@ host = localhost
 port = $PORT
 user = $PG_REPL_USER_NAME
 wal_slot = repl
+workers = 4
 hot_standby = $HOT_STANDBY_DIRECTORY
 hot_standby_overrides = $HOT_STANDBY_DIRECTORY/overrides
 EOF
@@ -369,8 +405,25 @@ need_build() {
   return 0
 }
 
+# Returns 0 if pgmoneta needs to be (re)compiled, 1 otherwise.
+# A (re)compile is needed when a binary is missing, or when any tracked
+# source file is newer than the built binaries.
+need_compile() {
+  if [[ ! -f "$TEST_DIRECTORY/pgmoneta-test" ]] || [[ ! -f "$EXECUTABLE_DIRECTORY/pgmoneta" ]]; then
+    return 0
+  fi
+  local bin
+  for bin in "$EXECUTABLE_DIRECTORY/pgmoneta" "$TEST_DIRECTORY/pgmoneta-test"; do
+    if [[ -n "$(find "$PROJECT_DIRECTORY/src" "$PROJECT_DIRECTORY/test" "$PROJECT_DIRECTORY/cmake" "$PROJECT_DIRECTORY/CMakeLists.txt" \
+                     \( -name '*.c' -o -name '*.h' -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
+                     -newer "$bin" -print -quit 2>/dev/null)" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 do_setup() {
-  local always_build="${1:-}"
   if [[ $MODE != "ci" ]]; then
     echo "Building PostgreSQL $PG_VERSION image if necessary"
     if $CONTAINER_ENGINE image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
@@ -382,6 +435,7 @@ do_setup() {
 
   echo "Preparing the pgmoneta directory"
   export LLVM_PROFILE_FILE="$COVERAGE_DIR/coverage-%p-%m.profraw"
+  chmod -R u+rwx "$PGMONETA_ROOT_DIR" 2>/dev/null || true
   rm -Rf "$PGMONETA_ROOT_DIR"
   mkdir -p "$PGMONETA_ROOT_DIR"
   mkdir -p "$LOG_DIR" "$PG_LOG_DIR" "$COVERAGE_DIR" "$BASE_DIR" "$RETROSPECT_DIR" "$HOT_STANDBY_DIRECTORY"
@@ -391,8 +445,8 @@ do_setup() {
   chmod -R 777 $PG_LOG_DIR
   chmod -R 777 $PGCONF_DIRECTORY
 
-  if [[ "$always_build" == "force" ]] || [[ ! -f "$TEST_DIRECTORY/pgmoneta-test" ]] || [[ ! -f "$EXECUTABLE_DIRECTORY/pgmoneta" ]]; then
-    echo "Building pgmoneta"
+  if need_compile; then
+    echo "Building pgmoneta (binaries missing or sources changed)"
     mkdir -p "$PROJECT_DIRECTORY/build"
     cd "$PROJECT_DIRECTORY/build"
     export CC=$(which clang)
@@ -400,7 +454,7 @@ do_setup() {
     make -j$(nproc)
     cd ..
   else
-    echo "pgmoneta binaries already present, skipping build"
+    echo "pgmoneta binaries up to date, skipping build"
   fi
 
   if [[ $MODE == "ci" ]]; then
@@ -409,6 +463,13 @@ do_setup() {
   else
     echo "Start PostgreSQL $PG_VERSION container"
     start_postgresql_container
+    if [[ "$PG_VERSION" == "17" ]]; then
+      echo "Preparing host tablespace directory for hot standby copies"
+      chmod -R u+rwx "$TABLESPACE_DIR" 2>/dev/null || true
+      rm -Rf "$TABLESPACE_DIR"
+      mkdir -p "$TABLESPACE_DIR"
+      chmod 777 "$TABLESPACE_DIR"
+    fi
   fi
 
   echo "Initialize pgmoneta"
@@ -420,7 +481,7 @@ do_setup() {
 execute_testcases() {
    echo "Execute MCTF Testcases"
    set +e
-   
+
    if pgrep -f pgmoneta >/dev/null 2>&1 || [[ -f "/tmp/pgmoneta.localhost.pid" ]]; then
       echo "Clean up any existing pgmoneta processes"
       if [[ -f "/tmp/pgmoneta.localhost.pid" ]]; then
@@ -461,10 +522,29 @@ execute_testcases() {
       sleep 2
    done
 
+   echo "Wait for WAL streaming to be ready"
+   for i in {1..5}; do
+      if $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CONFIGURATION_DIRECTORY/pgmoneta_cli.conf status details -F json 2>/dev/null | \
+         grep -q '"WalStreaming": true'; then
+         echo "WAL streaming ready ... ok"
+         break
+      fi
+      if [[ $i -eq 5 ]]; then
+         echo "WAL streaming not ready ... not ok"
+         echo "Checking logs:"
+         tail -20 $LOG_DIR/pgmoneta.log 2>/dev/null || echo "Log file not found"
+         exit 1
+      fi
+      echo "Waiting for WAL streaming to be ready"
+      sleep 2
+   done
+
    echo "Start running MCTF tests"
    if [[ -f "$TEST_DIRECTORY/pgmoneta-test" ]]; then
       TEST_FILTER_ARGS=()
-      if [[ -n "${TEST_FILTER:-}" ]]; then
+      if [[ "${INTEGRATION_MODE:-false}" == "true" ]]; then
+         TEST_FILTER_ARGS=(-i)
+      elif [[ -n "${TEST_FILTER:-}" ]]; then
          TEST_FILTER_ARGS=(-t "$TEST_FILTER")
       elif [[ -n "${MODULE_FILTER:-}" ]]; then
          TEST_FILTER_ARGS=(-m "$MODULE_FILTER")
@@ -491,11 +571,17 @@ usage() {
    echo "Options (run tests with optional filter; default is full suite):"
    echo " -t, --test NAME     Run only tests matching NAME"
    echo " -m, --module NAME   Run all tests in module NAME"
+   echo " -i, --integration   Run only the storage-engine integration tests (all backends)"
+   echo "Note: PGMONETA_TEST_PORT overrides the default container port (6432)"
    echo "Examples:"
-   echo "  $0                  Run full test suite"
-   echo "  $0 build            Set up environment only; then run e.g. $0 -t backup_full"
-   echo "  $0 -t backup_full   Run test matching 'backup_full' (runs build if needed)"
-   echo "  $0 -m restore       Run all tests in module 'restore'"
+   echo "  $0                           Run full test suite"
+   echo "  $0 build                     Set up environment only; then run e.g. $0 -t backup_full"
+   echo "  $0 -t backup_full            Run test matching 'backup_full' (runs build if needed)"
+   echo "  $0 -m restore                Run all tests in module 'restore'"
+   echo "  $0 -m azure                  Run Azure integration tests"
+   echo "  $0 -m s3                     Run S3/Garage integration tests"
+   echo "  $0 -i                        Run all storage-engine integration tests"
+   echo "  PGMONETA_TEST_PORT=6433 $0   Use port 6433 for the PostgreSQL container"
    exit 1
 }
 
@@ -505,8 +591,8 @@ run_tests() {
   else
     # Double-check: binaries and config must exist (cleanup removes BASE_DIR/conf, so config can be missing)
     if [[ ! -f "$EXECUTABLE_DIRECTORY/pgmoneta" ]] || [[ ! -f "$TEST_DIRECTORY/pgmoneta-test" ]] \
-       || [[ ! -f "$CONFIGURATION_DIRECTORY/pgmoneta.conf" ]]; then
-      echo "Environment incomplete (binaries or config missing), running build"
+       || [[ ! -f "$CONFIGURATION_DIRECTORY/pgmoneta.conf" ]] || need_compile; then
+      echo "Environment incomplete or sources changed, running build"
       do_setup
     else
       echo "Environment already ready, skipping build"
@@ -517,21 +603,27 @@ run_tests() {
 
 TEST_FILTER=""
 MODULE_FILTER=""
+INTEGRATION_MODE=false
 SUBCOMMAND=""
 while [[ $# -gt 0 ]]; do
    case "$1" in
       -t|--test)
-         [[ -n "$MODULE_FILTER" ]] && { echo "Error: Cannot specify both -t and -m options"; usage; }
+         [[ -n "$MODULE_FILTER" || "$INTEGRATION_MODE" == "true" ]] && { echo "Error: Cannot combine -t with -m or -i"; usage; }
          shift
          [[ $# -eq 0 ]] && { echo "Error: -t/--test requires NAME"; usage; }
          TEST_FILTER="$1"
          shift
          ;;
       -m|--module)
-         [[ -n "$TEST_FILTER" ]] && { echo "Error: Cannot specify both -t and -m options"; usage; }
+         [[ -n "$TEST_FILTER" || "$INTEGRATION_MODE" == "true" ]] && { echo "Error: Cannot combine -m with -t or -i"; usage; }
          shift
          [[ $# -eq 0 ]] && { echo "Error: -m/--module requires NAME"; usage; }
          MODULE_FILTER="$1"
+         shift
+         ;;
+      -i|--integration)
+         [[ -n "$TEST_FILTER" || -n "$MODULE_FILTER" ]] && { echo "Error: Cannot combine -i with -t or -m"; usage; }
+         INTEGRATION_MODE=true
          shift
          ;;
       build)
@@ -570,7 +662,7 @@ done
 
 if [[ "$SUBCOMMAND" == "build" ]]; then
    detect_container_engine
-   do_setup force
+   do_setup
    exit 0
 fi
 if [[ "$SUBCOMMAND" == "setup" ]]; then

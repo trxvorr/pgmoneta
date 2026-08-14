@@ -65,10 +65,10 @@ This process is optional by using the `cmake` variable `-DDOCS=TRUE` (default), 
     Download the `Eisvogel` template for `pandoc`, please visit the [pandoc-latex-template](https://github.com/Wandmalfarbe/pandoc-latex-template) repository. For a standard installation, you can follow the steps outlined below.
 
 ```sh
-    wget https://github.com/Wandmalfarbe/pandoc-latex-template/releases/download/v3.4.0/Eisvogel-3.4.0.tar.gz
-    tar -xzf Eisvogel-3.4.0.tar.gz
+    wget https://github.com/Wandmalfarbe/pandoc-latex-template/releases/download/v3.5.0/Eisvogel-3.5.0.tar.gz
+    tar -xzf Eisvogel-3.5.0.tar.gz
     mkdir -p $HOME/.local/share/pandoc/templates
-    mv Eisvogel-3.4.0/eisvogel.latex $HOME/.local/share/pandoc/templates/
+    mv Eisvogel-3.5.0/eisvogel.latex $HOME/.local/share/pandoc/templates/
 ```
 
 3. Add package for LaTeX
@@ -76,7 +76,9 @@ This process is optional by using the `cmake` variable `-DDOCS=TRUE` (default), 
     Download the additional packages required for generating PDF and HTML files.
 
 ```sh
-    dnf install 'tex(footnote.sty)' 'tex(footnotebackref.sty)' 'tex(pagecolor.sty)' 'tex(hardwrap.sty)' 'tex(mdframed.sty)' 'tex(sourcesanspro.sty)' 'tex(ly1enc.def)' 'tex(sourcecodepro.sty)' 'tex(titling.sty)' 'tex(csquotes.sty)' 'tex(zref-abspage.sty)' 'tex(needspace.sty)' 'tex(selnolig.sty)' texlive-collection-latexextra
+    dnf install 'tex(csquotes.sty)' 'tex(footnote.sty)' 'tex(footnotebackref.sty)' 'tex(fvextra.sty)' 'tex(hardwrap.sty)' 'tex(ly1enc.def)' \
+                'tex(mdframed.sty)' 'tex(needspace.sty)' 'tex(pagecolor.sty)' 'tex(selnolig.sty)' 'tex(sourcecodepro.sty)' 'tex(sourcesans.sty)' \
+                'tex(sourcesanspro.sty)' 'tex(titling.sty)' 'tex(zref-abspage.sty)' texlive-collection-latexextra
 ```
 
 #### Generate API guide
@@ -177,7 +179,7 @@ export PATH=/usr/bin:$PATH
 initdb -k /tmp/pgsql
 ```
 
-#### Remove default acess
+#### Remove default access
 
 Remove last lines from `/tmp/pgsql/pg_hba.conf`
 
@@ -209,7 +211,7 @@ Set `password_encryption` value in `/tmp/pgsql/postgresql.conf` to be `scram-sha
 password_encryption = scram-sha-256
 ```
 
-For version 13, the default is `md5`, while for version 14 and above, it is `scram-sha-256`. Therefore, you should ensure that the value in `/tmp/pgsql/postgresql.conf` matches the value in `/tmp/pgsql/pg_hba.conf`.
+For version 13, the default `password_encryption` is `md5`, while for version 14 and above, it is `scram-sha-256`. **Note:** pgmoneta no longer supports MD5 authentication. You **must** set `password_encryption = scram-sha-256` in `/tmp/pgsql/postgresql.conf` and use `scram-sha-256` in `/tmp/pgsql/pg_hba.conf` for all PostgreSQL versions.
 
 #### Set replication level
 
@@ -447,6 +449,10 @@ Now that we've attempted our first backup, take a moment to relax. There are a f
 ## Testing
 
 See `doc/TEST.md` for adding test cases and running test suites. It is recommended that you **ALWAYS** run tests before raising PR.
+
+## Benchmarking
+
+See `doc/BENCHMARK.md` for measuring performance and comparing a branch against `main`. It is recommended that you run benchmarks before raising a PR that claims a performance improvement, and attach the `compare` output to the PR description.
 
 ## C programming
 

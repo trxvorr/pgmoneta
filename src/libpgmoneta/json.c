@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -180,7 +180,7 @@ pgmoneta_json_locate(struct json_reader* reader, char** key_path, int key_path_l
                goto error;
             }
             // if the cur_key matches current key in path
-            if (!strcmp(cur_key, key))
+            if (pgmoneta_compare_string(cur_key, key))
             {
                if (i == key_path_length - 1)
                {
@@ -1472,9 +1472,7 @@ pgmoneta_json_read_file(char* path, struct json** obj)
       goto error;
    }
 
-   file = fopen(path, "r");
-
-   if (file == NULL)
+   if (pgmoneta_fopen_secure(path, "r", &file))
    {
       pgmoneta_log_error("Failed to open json file %s", path);
       goto error;
@@ -1528,8 +1526,7 @@ pgmoneta_json_write_file(char* path, struct json* obj)
       goto error;
    }
 
-   file = fopen(path, "wb");
-   if (file == NULL)
+   if (pgmoneta_fopen_secure(path, "wb", &file))
    {
       pgmoneta_log_error("Failed to create json file %s", path);
       goto error;

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -41,6 +41,9 @@
 #include <nmmintrin.h>
 #include <wmmintrin.h>
 #endif
+#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -54,7 +57,6 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
-#include <openssl/md5.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
@@ -72,12 +74,11 @@
 #define SECURITY_REJECT             -1
 #define SECURITY_TRUST              0
 #define SECURITY_PASSWORD           3
-#define SECURITY_MD5                5
 #define SECURITY_SCRAM256           10
 #define SECURITY_ALL                99
 
 #define NUMBER_OF_SECURITY_MESSAGES 5
-#define SECURITY_BUFFER_SIZE        1024
+#define SECURITY_BUFFER_SIZE        16384 /* Must hold a PasswordMessage carrying a MAX_PASSWORD_LENGTH credential (cloud IAM tokens) */
 
 static signed char has_security;
 static ssize_t security_lengths[NUMBER_OF_SECURITY_MESSAGES];
@@ -90,20 +91,18 @@ static size_t cached_master_salt_length = 0;
 static atomic_schar security_cache_lock = 0;
 
 static int get_auth_type(struct message* msg, int* auth_type);
-static int get_salt(void* data, char** salt);
-static int generate_md5(char* str, int length, char** md5);
 
 static int client_scram256(SSL* c_ssl, int client_fd, char* password, int slot);
 
 static int server_trust(void);
 static int server_password(char* username, char* password, SSL* ssl, int server_fd);
-static int server_md5(char* username, char* password, SSL* ssl, int server_fd);
 static int server_scram256(char* username, char* password, SSL* ssl, int server_fd);
 
 static char* get_admin_password(char* username);
 
 static int sasl_prep(char* password, char** password_prep);
 static int generate_nounce(char** nounce);
+static int scram_parse_iterations(char* str, int* iterations);
 static int get_scram_attribute(char attribute, char* input, size_t size, char** value);
 static int client_proof(char* password, char* salt, int salt_length, int iterations,
                         char* client_first_message_bare, size_t client_first_message_bare_length,
@@ -467,7 +466,7 @@ pgmoneta_remote_management_scram_sha256(char* username, char* password, int serv
       goto error;
    }
 
-   status = pgmoneta_read_block_message(ssl, server_fd, &msg);
+   status = pgmoneta_read_complete_message(ssl, server_fd, &msg);
    if (status != MESSAGE_STATUS_OK)
    {
       goto error;
@@ -498,13 +497,19 @@ pgmoneta_remote_management_scram_sha256(char* username, char* password, int serv
       goto error;
    }
 
-   status = pgmoneta_read_block_message(ssl, server_fd, &msg);
+   status = pgmoneta_read_complete_message(ssl, server_fd, &msg);
    if (status != MESSAGE_STATUS_OK)
    {
       goto error;
    }
 
    sasl_continue = pgmoneta_copy_message(msg);
+
+   /* 'R' + length + AuthenticationSASLContinue + payload */
+   if (sasl_continue->length <= 9)
+   {
+      goto error;
+   }
 
    get_scram_attribute('r', (char*)(sasl_continue->data + 9), sasl_continue->length - 9, &combined_nounce);
    get_scram_attribute('s', (char*)(sasl_continue->data + 9), sasl_continue->length - 9, &base64_salt);
@@ -516,12 +521,20 @@ pgmoneta_remote_management_scram_sha256(char* username, char* password, int serv
       goto error;
    }
 
+   if (combined_nounce == NULL || base64_salt == NULL || iteration_string == NULL)
+   {
+      goto error;
+   }
+
    if (pgmoneta_base64_decode(base64_salt, strlen(base64_salt), (void**)&salt, &salt_length))
    {
       goto error;
    }
 
-   iteration = atoi(iteration_string);
+   if (scram_parse_iterations(iteration_string, &iteration))
+   {
+      goto error;
+   }
 
    memset(&wo_proof[0], 0, sizeof(wo_proof));
    pgmoneta_snprintf(&wo_proof[0], sizeof(wo_proof), "c=biws,r=%s", combined_nounce);
@@ -558,13 +571,19 @@ pgmoneta_remote_management_scram_sha256(char* username, char* password, int serv
       goto error;
    }
 
-   status = pgmoneta_read_block_message(ssl, server_fd, &msg);
+   status = pgmoneta_read_complete_message(ssl, server_fd, &msg);
    if (status != MESSAGE_STATUS_OK)
    {
       goto error;
    }
 
    if (pgmoneta_extract_message('R', msg, &sasl_final))
+   {
+      goto error;
+   }
+
+   /* 'R' + length + AuthenticationSASLFinal + 'v' attribute */
+   if (sasl_final->length <= 11)
    {
       goto error;
    }
@@ -716,12 +735,7 @@ get_auth_type(struct message* msg, int* auth_type)
          pgmoneta_log_trace("Backend: R - CleartextPassword");
          break;
       case 5:
-         pgmoneta_log_trace("Backend: R - MD5Password");
-         pgmoneta_log_trace("             Salt %02hhx%02hhx%02hhx%02hhx",
-                            (signed char)(pgmoneta_read_byte(msg->data + 9) & 0xFF),
-                            (signed char)(pgmoneta_read_byte(msg->data + 10) & 0xFF),
-                            (signed char)(pgmoneta_read_byte(msg->data + 11) & 0xFF),
-                            (signed char)(pgmoneta_read_byte(msg->data + 12) & 0xFF));
+         pgmoneta_log_warn("MD5 is unsupported - use SCRAM-SHA-256 instead");
          break;
       case 6:
          pgmoneta_log_trace("Backend: R - SCMCredential");
@@ -772,66 +786,6 @@ get_auth_type(struct message* msg, int* auth_type)
    *auth_type = type;
 
    return 0;
-}
-
-static int
-get_salt(void* data, char** salt)
-{
-   char* result;
-
-   result = malloc(4);
-
-   if (result == NULL)
-   {
-      goto error;
-   }
-
-   memset(result, 0, 4);
-
-   memcpy(result, data + 9, 4);
-
-   *salt = result;
-
-   return 0;
-
-error:
-
-   return 1;
-}
-
-static int
-generate_md5(char* str, int length, char** md5)
-{
-   int n;
-   MD5_CTX c;
-   unsigned char digest[16];
-   char* out;
-
-   out = malloc(33);
-
-   if (out == NULL)
-   {
-      goto error;
-   }
-
-   memset(out, 0, 33);
-
-   MD5_Init(&c);
-   MD5_Update(&c, str, length);
-   MD5_Final(digest, &c);
-
-   for (n = 0; n < 16; ++n)
-   {
-      pgmoneta_snprintf(&(out[n * 2]), 33 - (n * 2), "%02x", (unsigned int)digest[n]);
-   }
-
-   *md5 = out;
-
-   return 0;
-
-error:
-
-   return 1;
 }
 
 static int
@@ -904,6 +858,12 @@ retry:
       pgmoneta_socket_nonblocking(client_fd, false);
    }
 
+   /* 'p' + length + mechanism + "n,,n=,r=" + nounce */
+   if (msg->length <= 26)
+   {
+      goto error;
+   }
+
    client_first_message_bare = malloc(msg->length - 25);
 
    if (client_first_message_bare == NULL)
@@ -915,6 +875,12 @@ retry:
    memcpy(client_first_message_bare, msg->data + 26, msg->length - 26);
 
    get_scram_attribute('r', (char*)msg->data + 26, msg->length - 26, &client_nounce);
+
+   if (client_nounce == NULL)
+   {
+      goto error;
+   }
+
    generate_nounce(&server_nounce);
    generate_salt(&salt, &salt_length);
    if (pgmoneta_base64_encode(salt, salt_length, &base64_salt, &base64_salt_length))
@@ -955,7 +921,19 @@ retry:
       goto error;
    }
 
+   /* 'p' + length + "c=biws,r=" + nounces (57 bytes) + ",p=" + proof */
+   if (msg->length < 62)
+   {
+      goto error;
+   }
+
    get_scram_attribute('p', (char*)msg->data + 5, msg->length - 5, &base64_client_proof);
+
+   if (base64_client_proof == NULL)
+   {
+      goto error;
+   }
+
    if (pgmoneta_base64_decode(base64_client_proof, strlen(base64_client_proof), (void**)&client_proof_received, &client_proof_received_length))
    {
       goto error;
@@ -1223,7 +1201,7 @@ pgmoneta_server_authenticate(int server, char* database, char* username, char* p
    {
       goto error;
    }
-   else if (auth_type != SECURITY_TRUST && auth_type != SECURITY_PASSWORD && auth_type != SECURITY_MD5 && auth_type != SECURITY_SCRAM256)
+   else if (auth_type != SECURITY_TRUST && auth_type != SECURITY_PASSWORD && auth_type != SECURITY_SCRAM256)
    {
       goto error;
    }
@@ -1238,10 +1216,6 @@ pgmoneta_server_authenticate(int server, char* database, char* username, char* p
    else if (auth_type == SECURITY_PASSWORD)
    {
       status = server_password(username, password, c_ssl, server_fd);
-   }
-   else if (auth_type == SECURITY_MD5)
-   {
-      status = server_md5(username, password, c_ssl, server_fd);
    }
    else if (auth_type == SECURITY_SCRAM256)
    {
@@ -1328,6 +1302,12 @@ server_password(char* username, char* password, SSL* ssl, int server_fd)
       goto error;
    }
 
+   if (password_msg->length > SECURITY_BUFFER_SIZE)
+   {
+      pgmoneta_log_error("Password message too large: %ld", password_msg->length);
+      goto error;
+   }
+
    security_lengths[auth_index] = password_msg->length;
    memcpy(&security_messages[auth_index], password_msg->data, password_msg->length);
    auth_index++;
@@ -1379,139 +1359,6 @@ bad_password:
 error:
 
    pgmoneta_free_message(password_msg);
-   pgmoneta_clear_message();
-
-   return AUTH_ERROR;
-}
-
-static int
-server_md5(char* username, char* password, SSL* ssl, int server_fd)
-{
-   int status = MESSAGE_STATUS_ERROR;
-   int auth_index = 1;
-   int auth_response = -1;
-   size_t size;
-   char* pwdusr = NULL;
-   char* shadow = NULL;
-   char* md5_req = NULL;
-   char* md5 = NULL;
-   char md5str[36];
-   char* salt = NULL;
-   struct message* auth_msg = NULL;
-   struct message* md5_msg = NULL;
-
-   pgmoneta_log_trace("server_md5");
-
-   if (get_salt(security_messages[0], &salt))
-   {
-      goto error;
-   }
-
-   size = strlen(username) + strlen(password) + 1;
-   pwdusr = malloc(size);
-   memset(pwdusr, 0, size);
-
-   pgmoneta_snprintf(pwdusr, size, "%s%s", password, username);
-
-   if (generate_md5(pwdusr, strlen(pwdusr), &shadow))
-   {
-      goto error;
-   }
-
-   md5_req = malloc(36);
-   memset(md5_req, 0, 36);
-   memcpy(md5_req, shadow, 32);
-   memcpy(md5_req + 32, salt, 4);
-
-   if (generate_md5(md5_req, 36, &md5))
-   {
-      goto error;
-   }
-
-   memset(&md5str, 0, sizeof(md5str));
-   pgmoneta_snprintf(&md5str[0], 36, "md5%s", md5);
-
-   status = pgmoneta_create_auth_md5_response(md5str, &md5_msg);
-   if (status != MESSAGE_STATUS_OK)
-   {
-      goto error;
-   }
-
-   status = pgmoneta_write_message(ssl, server_fd, md5_msg);
-   if (status != MESSAGE_STATUS_OK)
-   {
-      goto error;
-   }
-
-   security_lengths[auth_index] = md5_msg->length;
-   memcpy(&security_messages[auth_index], md5_msg->data, md5_msg->length);
-   auth_index++;
-
-   status = pgmoneta_read_block_message(ssl, server_fd, &auth_msg);
-   if (auth_msg->length > SECURITY_BUFFER_SIZE)
-   {
-      pgmoneta_log_message(auth_msg);
-      pgmoneta_log_error("Security message too large: %ld", auth_msg->length);
-      goto error;
-   }
-
-   get_auth_type(auth_msg, &auth_response);
-   pgmoneta_log_trace("authenticate: auth response %d", auth_response);
-
-   if (auth_response == 0)
-   {
-      if (auth_msg->length > SECURITY_BUFFER_SIZE)
-      {
-         pgmoneta_log_message(auth_msg);
-         pgmoneta_log_error("Security message too large: %ld", auth_msg->length);
-         goto error;
-      }
-
-      security_lengths[auth_index] = auth_msg->length;
-      memcpy(&security_messages[auth_index], auth_msg->data, auth_msg->length);
-
-      has_security = SECURITY_MD5;
-   }
-   else
-   {
-      goto bad_password;
-   }
-
-   free(pwdusr);
-   free(shadow);
-   free(md5_req);
-   free(md5);
-   free(salt);
-
-   pgmoneta_free_message(md5_msg);
-   pgmoneta_clear_message();
-
-   return AUTH_SUCCESS;
-
-bad_password:
-
-   pgmoneta_log_warn("Wrong password for user: %s", username);
-
-   free(pwdusr);
-   free(shadow);
-   free(md5_req);
-   free(md5);
-   free(salt);
-
-   pgmoneta_free_message(md5_msg);
-   pgmoneta_clear_message();
-
-   return AUTH_BAD_PASSWORD;
-
-error:
-
-   free(pwdusr);
-   free(shadow);
-   free(md5_req);
-   free(md5);
-   free(salt);
-
-   pgmoneta_free_message(md5_msg);
    pgmoneta_clear_message();
 
    return AUTH_ERROR;
@@ -1575,7 +1422,12 @@ server_scram256(char* username, char* password, SSL* ssl, int server_fd)
       goto error;
    }
 
-   status = pgmoneta_read_block_message(ssl, server_fd, &msg);
+   status = pgmoneta_read_complete_message(ssl, server_fd, &msg);
+   if (status != MESSAGE_STATUS_OK)
+   {
+      goto error;
+   }
+
    if (msg->length > SECURITY_BUFFER_SIZE)
    {
       pgmoneta_log_message(msg);
@@ -1589,6 +1441,12 @@ server_scram256(char* username, char* password, SSL* ssl, int server_fd)
    memcpy(&security_messages[auth_index], sasl_continue->data, sasl_continue->length);
    auth_index++;
 
+   /* 'R' + length + AuthenticationSASLContinue + payload */
+   if (sasl_continue->length <= 9)
+   {
+      goto error;
+   }
+
    get_scram_attribute('r', (char*)(sasl_continue->data + 9), sasl_continue->length - 9, &combined_nounce);
    get_scram_attribute('s', (char*)(sasl_continue->data + 9), sasl_continue->length - 9, &base64_salt);
    get_scram_attribute('i', (char*)(sasl_continue->data + 9), sasl_continue->length - 9, &iteration_string);
@@ -1600,13 +1458,21 @@ server_scram256(char* username, char* password, SSL* ssl, int server_fd)
       goto error;
    }
 
+   if (combined_nounce == NULL || base64_salt == NULL || iteration_string == NULL)
+   {
+      goto error;
+   }
+
    if (pgmoneta_base64_decode(base64_salt, strlen(base64_salt), (void**)&salt, &salt_length))
    {
       pgmoneta_log_error("Failed to decode salt");
       goto error;
    }
 
-   iteration = atoi(iteration_string);
+   if (scram_parse_iterations(iteration_string, &iteration))
+   {
+      goto error;
+   }
 
    memset(&wo_proof[0], 0, sizeof(wo_proof));
    pgmoneta_snprintf(&wo_proof[0], sizeof(wo_proof), "c=biws,r=%s", combined_nounce);
@@ -1647,7 +1513,12 @@ server_scram256(char* username, char* password, SSL* ssl, int server_fd)
       goto error;
    }
 
-   status = pgmoneta_read_block_message(ssl, server_fd, &msg);
+   status = pgmoneta_read_complete_message(ssl, server_fd, &msg);
+   if (status != MESSAGE_STATUS_OK)
+   {
+      goto error;
+   }
+
    if (msg->length > SECURITY_BUFFER_SIZE)
    {
       pgmoneta_log_message(msg);
@@ -1665,6 +1536,12 @@ server_scram256(char* username, char* password, SSL* ssl, int server_fd)
    }
 
    if (pgmoneta_extract_message('R', msg, &sasl_final))
+   {
+      goto error;
+   }
+
+   /* 'R' + length + AuthenticationSASLFinal + 'v' attribute */
+   if (sasl_final->length <= 11)
    {
       goto error;
    }
@@ -1769,7 +1646,7 @@ get_admin_password(char* username)
 
    for (int i = 0; i < config->common.number_of_admins; i++)
    {
-      if (!strcmp(&config->common.admins[i].username[0], username))
+      if (pgmoneta_compare_string(&config->common.admins[i].username[0], username))
       {
          return &config->common.admins[i].password[0];
       }
@@ -1890,8 +1767,7 @@ pgmoneta_get_master_key(char** masterkey, size_t* masterkey_length, unsigned cha
       }
    }
 
-   master_key_file = fopen(&buf[0], "r");
-   if (master_key_file == NULL)
+   if (pgmoneta_fopen_secure(&buf[0], "r", &master_key_file))
    {
       pgmoneta_log_error("Unable to open master key file");
       goto error;
@@ -2155,7 +2031,6 @@ error:
 static int
 sasl_prep(char* password, char** password_prep)
 {
-   size_t char_count;
    size_t password_len;
 
    if (!password || !password_prep)
@@ -2182,9 +2057,8 @@ sasl_prep(char* password, char** password_prep)
       goto error;
    }
 
-   // Validate the character count in the password
-   char_count = pgmoneta_utf8_char_length((const unsigned char*)password, password_len);
-   if (char_count == (size_t)-1 || char_count > MAX_PASSWORD_CHARS)
+   // Enforce the password byte-length limit
+   if (password_len >= MAX_PASSWORD_LENGTH)
    {
       goto error;
    }
@@ -2228,6 +2102,66 @@ generate_nounce(char** nounce)
 error:
 
    return 1;
+}
+
+/* Parse a SCRAM-SHA-256 iteration count from an untrusted peer. Unlike atoi()
+ * this rejects garbage, signs and overflow, and caps the value at
+ * SCRAM_MAX_ITERATIONS so a peer cannot force unbounded PBKDF2 work. */
+static int
+scram_parse_iterations(char* str, int* iterations)
+{
+   char* end = NULL;
+   long value;
+
+   *iterations = 0;
+
+   if (str == NULL || str[0] == '\0')
+   {
+      pgmoneta_log_error("SCRAM-SHA-256: missing iteration count");
+      return 1;
+   }
+
+   /* decimal digits only - no sign, whitespace or 0x prefix */
+   for (char* p = str; *p != '\0'; p++)
+   {
+      if (!isdigit((unsigned char)*p))
+      {
+         pgmoneta_log_error("SCRAM-SHA-256: invalid iteration count '%s'", str);
+         return 1;
+      }
+   }
+
+   errno = 0;
+   value = strtol(str, &end, 10);
+
+   if (errno != 0 || end == str || *end != '\0')
+   {
+      pgmoneta_log_error("SCRAM-SHA-256: invalid iteration count '%s'", str);
+      return 1;
+   }
+
+   if (value <= 0)
+   {
+      pgmoneta_log_error("SCRAM-SHA-256: non-positive iteration count '%s'", str);
+      return 1;
+   }
+
+   if (value > INT_MAX)
+   {
+      pgmoneta_log_error("SCRAM-SHA-256: iteration count '%s' is out of range", str);
+      return 1;
+   }
+
+   if (value > SCRAM_MAX_ITERATIONS)
+   {
+      pgmoneta_log_error("SCRAM-SHA-256: iteration count %ld exceeds the maximum of %d",
+                         value, SCRAM_MAX_ITERATIONS);
+      return 1;
+   }
+
+   *iterations = (int)value;
+
+   return 0;
 }
 
 static int
@@ -3021,15 +2955,15 @@ create_hash_file(char* filename, char* algorithm, char** hash)
       goto error;
    }
 
-   if (strcmp("SHA224", algorithm) == 0)
+   if (pgmoneta_compare_string("SHA224", algorithm))
    {
       hash_len = 57;
    }
-   else if (strcmp("SHA256", algorithm) == 0)
+   else if (pgmoneta_compare_string("SHA256", algorithm))
    {
       hash_len = 65;
    }
-   else if (strcmp("SHA384", algorithm) == 0)
+   else if (pgmoneta_compare_string("SHA384", algorithm))
    {
       hash_len = 97;
    }
@@ -3065,6 +2999,8 @@ create_hash_file(char* filename, char* algorithm, char** hash)
    file = fopen(filename, "rb");
    if (file == NULL)
    {
+      pgmoneta_log_error("create_hash_file: could not open %s (%s)", filename, strerror(errno));
+      errno = 0;
       goto error;
    }
 
@@ -3536,15 +3472,15 @@ pgmoneta_hasher_create(char* algorithm, struct hasher** hasher)
       goto error;
    }
 
-   if (strcmp("SHA224", algorithm) == 0)
+   if (pgmoneta_compare_string("SHA224", algorithm))
    {
       hash_len = 57;
    }
-   else if (strcmp("SHA256", algorithm) == 0)
+   else if (pgmoneta_compare_string("SHA256", algorithm))
    {
       hash_len = 65;
    }
-   else if (strcmp("SHA384", algorithm) == 0)
+   else if (pgmoneta_compare_string("SHA384", algorithm))
    {
       hash_len = 97;
    }

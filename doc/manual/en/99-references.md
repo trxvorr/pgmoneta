@@ -1,5 +1,6 @@
 [pgmoneta]: https://pgmoneta.github.io/
 [postgresql]: https://www.postgresql.org
+[yum]: https://yum.postgresql.org
 [fedora]: https://getfedora.org/
 [rhel]: https://www.redhat.com/en/technologies/linux-platforms/enterprise-linux
 [appstram]: https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/installing_managing_and_removing_user-space_components/using-appstream_using-appstream
@@ -54,7 +55,10 @@
 [D113]: https://github.com/postgres/postgres/commit/6af1793954e8c5e753af83c3edb37ed3267dd179
 [D116]: https://github.com/postgres/postgres/commit/402b586d0a9caae9412d25fcf1b91dae45375833
 [D118]: https://github.com/postgres/postgres/commit/243e9b40f1b2dd09d6e5bf91ebf6e822a2cd3704
+[D121]: https://github.com/postgres/postgres/commit/b01c31eef9c3a83d0bd9f30656cedaa6722890ee
 
+[cmake_txt]: https://github.com/pgmoneta/pgmoneta/blob/main/CMakeLists.txt
+[src/cmake_txt]: https://github.com/pgmoneta/pgmoneta/blob/main/src/CMakeLists.txt
 [main_c]: https://github.com/pgmoneta/pgmoneta/blob/main/src/main.c
 [achv_h]: https://github.com/pgmoneta/pgmoneta/blob/main/src/include/achv.h
 [aes.c]: https://github.com/pgmoneta/pgmoneta/blob/main/src/libpgmoneta/aes.c

@@ -37,6 +37,7 @@ extern "C" {
 #include <deque.h>
 
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -78,9 +79,10 @@ struct workers
    struct worker** worker;         /**< The list of workers */
    volatile int number_of_alive;   /**< The number of alive workers */
    volatile int number_of_working; /**< The number of workers */
+   volatile int keepalive;         /**< The keep-alive flag */
    pthread_mutex_t worker_lock;    /**< The worker lock */
    pthread_cond_t worker_all_idle; /**< Are workers idle */
-   bool outcome;                   /**< Outcome of the workers */
+   struct deque* outcome;          /**< Aggregated failures */
    struct deque* queue;            /**< The task queue using deque */
    struct semaphore* has_tasks;    /**< Semaphore for tasks dispatching*/
 };
@@ -140,6 +142,45 @@ pgmoneta_workers_wait(struct workers* workers);
  */
 void
 pgmoneta_workers_destroy(struct workers* workers);
+
+/**
+ * True if no recorded worker failures (workers NULL means OK).
+ * @param workers The workers
+ * @return true if OK to continue dispatching
+ */
+bool
+pgmoneta_workers_outcome_ok(struct workers* workers);
+
+/**
+ * Record a formatted failure message into a failure deque (thread-safe).
+ * @param failures The failure deque
+ * @param fmt printf-style format string
+ */
+void
+pgmoneta_record_failure(struct deque* failures, char* fmt, ...) __attribute__((format(printf, 2, 3)));
+
+/**
+ * Log all failure messages collected in the outcome deque.
+ * Call this immediately after pgmoneta_workers_wait when
+ * pgmoneta_workers_outcome_ok returns false, so every failure
+ * from the batch is presented together rather than scattered
+ * across thread log output.
+ * @param workers The workers
+ */
+void
+pgmoneta_workers_log_failures(struct workers* workers);
+
+/**
+ * Log all failure messages and transfer them into the NODE_WORKER_ERRORS
+ * deque stored in nodes, so callers can surface them in the client response.
+ * If nodes is NULL this behaves identically to pgmoneta_workers_log_failures.
+ * Multiple calls accumulate into the same deque (failures from successive
+ * worker batches within one workflow are all collected together).
+ * @param workers The workers
+ * @param nodes   The workflow ART node tree
+ */
+void
+pgmoneta_workers_transfer_failures(struct workers* workers, struct art* nodes);
 
 /**
  * Get the number of workers for a server

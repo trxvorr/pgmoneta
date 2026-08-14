@@ -29,7 +29,7 @@ CREATE DATABASE PG_DATABASE WITH OWNER PG_USER_NAME TEMPLATE template0 ENCODING 
 
 CREATE ROLE PG_REPL_USER_NAME WITH LOGIN REPLICATION PASSWORD 'PG_REPL_PASSWORD';
 
--- GRANT REPL_USER priviledge to perform CHECKPOINT and pg_switch_wal
+-- GRANT REPL_USER privilege to perform CHECKPOINT and pg_switch_wal
 GRANT pg_checkpoint TO PG_REPL_USER_NAME;
 GRANT pg_read_server_files TO PG_REPL_USER_NAME;
 
@@ -39,3 +39,11 @@ GRANT EXECUTE ON FUNCTION pg_stat_file(text, boolean) TO PG_REPL_USER_NAME;
 -- GRANT REPL_USER execute privileges on backup admin functions
 GRANT EXECUTE ON FUNCTION pg_backup_start(text, boolean) TO PG_REPL_USER_NAME;
 GRANT EXECUTE ON FUNCTION pg_backup_stop(boolean) TO PG_REPL_USER_NAME;
+
+-- Tablespaces for the tablespace backup/restore test module.
+CREATE TABLESPACE ts1 LOCATION '/tmp/pgmoneta_tblspc/ts1';
+CREATE TABLESPACE ts2 LOCATION '/tmp/pgmoneta_tblspc/ts2';
+
+-- Allow the regular test user to create objects in the tablespaces.
+GRANT CREATE ON TABLESPACE ts1 TO PG_USER_NAME;
+GRANT CREATE ON TABLESPACE ts2 TO PG_USER_NAME;

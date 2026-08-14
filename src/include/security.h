@@ -39,6 +39,10 @@ extern "C" {
 #include <stdlib.h>
 #include <openssl/ssl.h>
 
+/* Largest SCRAM-SHA-256 iteration count we accept; caps the PBKDF2 work a peer
+ * can force on us. Well above PostgreSQL's default of 4096. */
+#define SCRAM_MAX_ITERATIONS 100000
+
 /** @struct hasher
  * Defines a hasher
  */
@@ -209,7 +213,7 @@ int
 pgmoneta_create_ssl_server(SSL_CTX* ctx, char* key, char* cert, char* root, int socket, SSL** ssl);
 
 /**
- * Extract server parameters recevied during the latest authentication
+ * Extract server parameters received during the latest authentication
  * @param server_parameters The resulting non-thread-safe deque
  * @return 0 on success, otherwise 1
  */

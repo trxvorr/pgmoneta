@@ -35,11 +35,21 @@ extern "C" {
 
 /* pgmoneta */
 #include <pgmoneta.h>
+#include <info.h>
 #include <workflow.h>
 
 /* system */
 #include <libssh/libssh.h>
 #include <libssh/sftp.h>
+
+/**
+ * Storage engine capabilities
+ */
+#define STORAGE_CAP_ATOMIC_RENAME (1 << 0) /**< Atomic rename (SSH) */
+#define STORAGE_CAP_RANGE_GET     (1 << 1) /**< Range reads (S3, Azure) */
+#define STORAGE_CAP_BATCH_DELETE  (1 << 2) /**< Batch delete (S3) */
+#define STORAGE_CAP_MULTIPART     (1 << 3) /**< Multipart upload (S3) */
+#define STORAGE_CAP_PARALLEL_SAFE (1 << 4) /**< Parallel-safe upload (S3, Azure) */
 
 /**
  * Create a workflow for the local storage engine
@@ -65,11 +75,42 @@ struct workflow*
 pgmoneta_storage_create_s3(int workflow_type);
 
 /**
+ * List backup labels available in the configured storage engine.
+ *
+ * @param server The server index
+ * @param labels The resulting deque of backup labels
+ * @return 0 on success, otherwise 1
+*/
+int
+pgmoneta_storage_list_backup_labels(int server, struct deque** labels);
+
+/**
+ * Verify a backup label in the configured storage engine.
+ *
+ * This is backend-specific scheduled verification, not necessarily full
+ * file-content verification. For S3 this verifies metadata integrity and
+ * manifest-listed object presence without downloading data objects.
+ *
+ * @param server The server index
+ * @param backup_info The backup info
+ * @return 0 on success, otherwise 1
+*/
+int
+pgmoneta_storage_verify_backup(int server, struct backup* backup_info);
+
+/**
  * Create a workflow for the Azure storage engine
  * @return The workflow
  */
 struct workflow*
 pgmoneta_storage_create_azure(void);
+
+/**
+ * Create a workflow for the remote storage engines
+ * @return The workflow
+ */
+struct workflow*
+pgmoneta_storage_create_remote(void);
 
 /**
  * Open WAL shipping file in remote ssh server
@@ -92,6 +133,15 @@ pgmoneta_sftp_wal_open(int server, char* filename, int segsize, sftp_file* file)
  */
 int
 pgmoneta_sftp_wal_close(int server, char* filename, bool partial, sftp_file* file);
+
+/**
+ * Check if a storage engine is enabled in the current configuration
+ * @param engine The storage engine flag (e.g. STORAGE_ENGINE_LOCAL, STORAGE_ENGINE_S3)
+ * @return true if enabled, otherwise false
+ */
+bool
+pgmoneta_is_storage_engine_enabled(int engine);
+
 #ifdef __cplusplus
 }
 #endif
